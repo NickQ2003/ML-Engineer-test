@@ -403,6 +403,12 @@ Se necesitan Docker Engine y Docker Compose. Los datos de Qdrant persisten en el
 volumen `qdrant_data`, sin exponer el servicio directamente al host. La primera
 construcción descarga las dependencias de Python y necesita acceso a la red.
 
+The Linux image installs the CPU-only PyTorch build; it does not require NVIDIA
+drivers or CUDA. Changing to GPU acceleration requires a different build setup.
+
+La imagen Linux instala PyTorch para CPU; no necesita controladores NVIDIA ni
+CUDA. Utilizar aceleración por GPU requiere una configuración de build distinta.
+
 ```bash
 # Optional / Opcional: customize defaults before starting / personalizar antes de iniciar
 cp .env.example .env
@@ -424,3 +430,11 @@ connection, model setup and LLM integration will be added in later milestones.
 En esta etapa aún no están implementados los endpoints de extracción y RAG; la
 conexión con Qdrant, la preparación de modelos y la integración con el LLM se
 añadirán en hitos posteriores.
+
+Test commands, observed results and incident resolutions are recorded in
+[`docs/TEST_LOG.md`](docs/TEST_LOG.md); engineering decisions are in
+[`DECISIONS.md`](DECISIONS.md).
+
+Los comandos de prueba, resultados observados y resoluciones de incidencias se
+registran en [`docs/TEST_LOG.md`](docs/TEST_LOG.md); las decisiones de ingeniería
+están en [`DECISIONS.md`](DECISIONS.md).
