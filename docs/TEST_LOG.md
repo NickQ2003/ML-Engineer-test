@@ -853,6 +853,151 @@ errores del parser.
 servicio Compose existente; este continúa usando la imagen anterior hasta que se
 recree. No se afirmó que el servicio ya activo esté ejecutando el código nuevo.
 
+## 2026-11-15 — Hito 3: NER por página y empaquetado del modelo
+
+**Entorno:** Docker sobre macOS ARM64; Linux aarch64, Python 3.12.16,
+spaCy 3.8.18, `en_core_web_sm` 3.8.0, Uvicorn 0.54.0 y pytest 9.2.0.
+La prueba utiliza el modelo inglés incluido en la imagen, no un modelo simulado.
+
+### Dependencias e imagen
+
+Se agregó el wheel oficial del modelo a `pyproject.toml` y se regeneró el lock;
+la versión de spaCy ya fijada permaneció en 3.8.18. `uv.lock` registra la URL y
+el SHA-256 del wheel. El Dockerfile comprueba la carga y la presencia de NER.
+
+```bash
+/private/var/folders/3b/9b_qzjg94m99y011jncyj9300000gn/T/opencode/uv-tool/bin/uv lock --python 3.12
+/private/var/folders/3b/9b_qzjg94m99y011jncyj9300000gn/T/opencode/uv-tool/bin/uv lock --check --python 3.12
+docker compose config --quiet
+docker compose build app
+```
+
+**Resultado:** `Resolved 107 packages`; el lock añadió `en-core-web-sm v3.8.0` y
+la imagen se construyó con éxito. La capa de comprobación del modelo pasó. El
+binario de `uv` indicado es el usado en este host; en otro entorno se puede usar
+`uv` instalado en el PATH. La construcción inicial necesitó red para GitHub y las
+dependencias; las ejecuciones posteriores pueden aprovechar la caché de Docker.
+
+### Ejecución sin red y reutilización del proceso
+
+```bash
+docker run --rm --network none -i --entrypoint python ml-engineer-test-app:latest - <<'PY'
+import asyncio
+from importlib.metadata import version
+from app.services.ner_async import NERService
+
+async def main():
+    service = NERService()
+    try:
+        pages = ['Barack Obama met Angela Merkel in Berlin.', 'Alice Johnson met Alice Johnson.']
+        first = await service.detect_pages(pages)
+        process = service._slots[0].process
+        second = await service.detect_pages(pages)
+        assert first == second and service._slots[0].process is process
+        assert [[span.text for span in page] for page in first] == [['Barack Obama', 'Angela Merkel'], ['Alice Johnson', 'Alice Johnson']]
+        assert all(page[span.char_start:span.char_end] == span.text for page, result in zip(pages, first) for span in result)
+        print('spaCy:', version('spacy'), '| model:', version('en-core-web-sm'))
+        print('network: disabled | pages: 2 | detections: 4 | worker reused: yes')
+    finally:
+        await service.aclose()
+    assert process.returncode is not None
+    print('worker stopped: yes')
+
+asyncio.run(main())
+PY
+```
+
+**Salida observada:**
+
+```text
+spaCy: 3.8.18 | model: 3.8.0
+network: disabled | pages: 2 | detections: 4 | worker reused: yes
+worker stopped: yes
+```
+
+### Batería completa
+
+```bash
+docker run --rm \
+  -v "$PWD/tests:/tests:ro" \
+  -v "$PWD/sample_pdfs:/samples:ro" \
+  -e SAMPLE_PDFS_DIR=/samples \
+  --entrypoint /bin/sh ml-engineer-test-app:latest \
+  -c 'uv pip install --target /tmp/test-deps "pytest==9.2.0" && PYTHONPATH=/tmp/test-deps:/app python -m pytest -p no:cacheprovider /tests/unit /tests/integration'
+```
+
+**Salida relevante:** `collected 195 items` → **`195 passed in 32.71s`**.
+Las pruebas cubren offsets por página, repeticiones, filtro de etiquetas, ausencia
+del modelo, entrada excesiva, procesos reutilizados, saturación, cancelación,
+timeout y cierre de un proceso simulado que ignora `SIGTERM`. También comprueban
+`/health` durante inferencia real y durante un proceso simulado lento. El OCR y
+NER reales se probaron juntos sobre `meeting_minutes.pdf` sin endpoint HTTP.
+
+### Observación exploratoria en PDF de ejemplo
+
+Se compararon apariciones exactas por página del OCR + NER con listas preparadas
+por el asistente a partir de la lectura de los PDF de muestra. **Estas referencias
+no han sido revisadas ni aprobadas por una persona**, no son un conjunto de
+evaluación independiente y no permiten extrapolar precisión a otros documentos.
+Cada aparición repetida se cuenta por separado; el criterio fue el nombre
+completo exacto, no la ubicación ni la etiqueta interna de otras entidades.
+
+| PDF | Referencia | Coincidencias exactas | Falsos positivos | Falsos negativos |
+|---|---:|---:|---:|---:|
+| `company_memo.pdf` | 8 | 8 | 1 | 0 |
+| `meeting_minutes.pdf` | 24 | 22 | 1 | 2 |
+
+En el primer PDF se etiquetó el nombre del proyecto `Atlas` como persona. En el
+segundo se etiquetó un fragmento de encabezado y se omitieron dos apariciones de
+`Elizabeth Park`. La combinación OCR + modelo inglés pequeño puede equivocarse;
+filtrar la etiqueta `PERSON` no constituye una garantía semántica.
+
+Comando utilizado para la comparación:
+
+```bash
+docker run --rm --network none -i -v "$PWD/sample_pdfs:/samples:ro" --entrypoint python ml-engineer-test-app:latest - <<'PY'
+from collections import Counter
+from pathlib import Path
+from app.services.ocr_service import OCRService
+from app.services.ner_service import SpacyPersonRecognizer
+
+reference = {
+    'company_memo.pdf': [[
+        'Margaret Thompson', 'Robert Chen', 'Sarah Williams', 'James Anderson',
+        'Maria Garcia', 'David Nakamura', 'Patricia Okonkwo', 'Margaret Thompson',
+    ]],
+    'meeting_minutes.pdf': [
+        ['Richard Hernandez', 'Elizabeth Park', 'Thomas Muller', 'Aisha Patel', "Kevin O'Brien", 'Jennifer Liu', 'Carlos Mendoza',
+         'Richard Hernandez', 'Jennifer Liu', 'Elizabeth Park', 'Thomas Muller', 'Elizabeth Park', 'Aisha Patel', "Kevin O'Brien"],
+        ['Thomas Muller', 'Yuki Tanaka', 'Alexander Popov', 'Richard Hernandez', 'Catherine Dubois', 'Aisha Patel', "Kevin O'Brien", 'Richard Hernandez', 'Jennifer Liu', 'Richard Hernandez'],
+    ],
+}
+ner = SpacyPersonRecognizer.load('en_core_web_sm', 100000)
+for filename, pages in reference.items():
+    document = OCRService().extract_file(Path('/samples') / filename)
+    tp = fp = fn = 0
+    extras, missing = [], []
+    for page, expected in zip(document.pages, pages, strict=True):
+        predicted = Counter(span.text for span in ner.detect_page(page.text))
+        expected = Counter(expected)
+        tp += sum((predicted & expected).values())
+        fp += sum((predicted - expected).values())
+        fn += sum((expected - predicted).values())
+        extras.extend((predicted - expected).elements())
+        missing.extend((expected - predicted).elements())
+    print(f'{filename}: reference={tp + fn}, detected={tp + fp}, exact_TP={tp}, FP={fp}, FN={fn}')
+    print(' extras:', extras)
+    print(' missing:', missing)
+PY
+```
+
+**Alcance y pendientes:** no se implementaron cuadros, fuzzy matching ni el
+endpoint real. Los límites de NER son por proceso y la admisión del flujo completo
+OCR–NER sigue pendiente. El servicio Compose que ya estaba activo no se reinició
+y conserva su imagen anterior. Una consulta exploratoria a la API de GitHub falló
+por comillas incorrectas en el script; no fue necesaria para instalar el wheel,
+cuya resolución y carga se comprobaron con `uv` y las pruebas descritas.
+
 ## Plantilla para próximas ejecuciones
 
 ````markdown

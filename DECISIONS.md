@@ -93,10 +93,37 @@
   validator; the endpoint integration must address the planned `413` mapping.
   Global worker/replica limits and real `/api/extract` testing remain pending.
 
+## Page-local NER and reproducible model
+
+- **Decision:** use the official English `en_core_web_sm` 3.8.0 model with
+  spaCy 3.8.x; `uv.lock` fixes the wheel URL, SHA-256 and resolved spaCy 3.8.18.
+  Install the model with the other dependencies at build/sync time and check
+  that it loads during image construction. Inference does not download models.
+- **Offsets:** process each OCR page separately and return every `PERSON` span
+  in original order, with Python character offsets local to that page and an
+  exclusive end. Preserve original text and repeated occurrences; validate the
+  correspondence between offsets and text again at the worker boundary.
+- **Concurrency:** `NERService` runs a bounded number of lazy, persistent POSIX
+  worker processes and loads the model once in each worker. Jobs and the queue,
+  per-page and per-document character counts, queue wait, job deadline and shutdown
+  are bounded. Documents move over private process pipes, not log messages; the
+  worker releases request-local references afterwards, without claiming secure
+  memory erasure. A
+  started job remains supervised if its caller cancels; a timeout or shutdown
+  terminates an unresponsive process group. The FastAPI lifespan shares one
+  service per application process; `/api/extract` is not yet connected to it.
+- **Trade-offs:** model download requires network and the upstream release to be
+  available during installation. Limits are per application process, not global,
+  and do not control admission of the complete OCR-to-NER flow. Workers require
+  POSIX and cleanup cannot be guaranteed after an abrupt machine/container death.
+  The English small model can miss names or label non-persons as `PERSON`; no
+  accuracy or multilingual guarantee is claimed. Observations on sample PDFs are
+  recorded in [the test log](docs/TEST_LOG.md).
+
 ## Use of AI tools
 
-OpenCode was used to help plan and implement infrastructure, OCR and the initial
-extraction input safeguards, translate the README, investigate CUDA image size
+OpenCode was used to help plan and implement infrastructure, OCR, NER and the
+initial extraction input safeguards, translate the README, investigate CUDA image size
 and review findings, and document and run checks. The project author remains
 responsible for reviewing, understanding, and validating the resulting code and
 decisions.

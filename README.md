@@ -158,7 +158,7 @@ batching, or other production hardening. Not required — credited when present.
 
 ```bash
 uv sync --extra dev                          # create .venv and install deps from pyproject.toml
-uv run python -m spacy download en_core_web_sm
+# The locked spaCy model is installed by uv sync; no separate download command.
 # Vector DB: embedded Chroma needs nothing extra. Only if you choose Qdrant:
 #   docker run -p 6333:6333 qdrant/qdrant
 uv run uvicorn app.main:app --reload
@@ -367,7 +367,7 @@ son obligatorios; se valoran cuando están presentes.
 
 ```bash
 uv sync --extra dev                          # crear .venv e instalar dependencias de pyproject.toml
-uv run python -m spacy download en_core_web_sm
+# El modelo spaCy fijado se instala con uv sync; no hace falta otra descarga.
 # Base de datos vectorial: Chroma integrado no necesita nada adicional. Solo si eliges Qdrant:
 #   docker run -p 6333:6333 qdrant/qdrant
 uv run uvicorn app.main:app --reload
@@ -468,16 +468,16 @@ quien lo espera; al cerrar, se termina su grupo de procesos tras el plazo de
 espera. No es una cola persistente ni garantiza limpieza ante la caída abrupta
 de la máquina o del contenedor.
 
-The extraction endpoint is still **not implemented**. Its first building blocks
-are in place: a `POST /api/extract` ASGI body guard, a page-local person-span
-contract and a `names` JSON validator. The validator is not wired to a real HTTP
-endpoint yet; `FUZZY_THRESHOLD` is configured but matching is not implemented.
+The extraction endpoint is still **not implemented**. Its building blocks include
+a `POST /api/extract` ASGI body guard, a `names` JSON validator and page-local
+PERSON detection. Neither the validator nor NER is wired to a real HTTP endpoint
+yet; `FUZZY_THRESHOLD` is configured but matching is not implemented.
 
 El endpoint de extracción **todavía no está implementado**. Sus primeras piezas
-ya existen: un límite ASGI para el cuerpo de `POST /api/extract`, un contrato
-interno de spans de personas por página y un validador JSON de `names`. Este
-validador aún no está conectado a un endpoint real; `FUZZY_THRESHOLD` está
-configurado pero la coincidencia aproximada aún no está implementada.
+ya existen: un límite ASGI para el cuerpo de `POST /api/extract`, un validador
+JSON de `names` y detección de personas por página. Ni el validador ni NER están
+conectados todavía a un endpoint real; `FUZZY_THRESHOLD` está configurado pero
+la coincidencia aproximada aún no está implementada.
 
 | Variable | Default | Scope / alcance |
 |---|---:|---|
@@ -512,6 +512,69 @@ endpoint aún debe traducir esos errores a HTTP. El parser multipart por defecto
 de FastAPI puede devolver `400` ante un campo de texto mayor de 1 MiB antes de que
 se ejecute el validador; la integración debe resolverlo para que el `413` previsto
 sea coherente con todos los campos excesivos.
+
+### Person detection / Detección de personas
+
+`uv.lock` pins spaCy 3.8.18 and the official `en_core_web_sm` 3.8.0 wheel,
+including its SHA-256. The wheel is downloaded from the official spaCy model
+release during `uv sync` or image build; the build verifies it loads. Inference
+requires no network or model download. `NER_MODEL` defaults to `en_core_web_sm`;
+another model must already be installed and compatible. A missing model raises a
+specific error instead of returning an empty result.
+
+`NERService.detect_pages()` receives a list of page strings and returns a list of
+`PersonSpan` lists in the same order, including empty pages. Offsets are Python
+character positions local to each page, with an exclusive end; repeated
+occurrences are kept. The async service executes spaCy in lazy, persistent POSIX
+worker processes and reuses the model within each worker. The FastAPI lifespan
+owns one service per application process. Synchronous callers may use
+`SpacyPersonRecognizer` or `extract_names`; they must not run those blocking
+functions directly on an async event loop.
+
+`uv.lock` fija spaCy 3.8.18 y el wheel oficial `en_core_web_sm` 3.8.0 con su
+SHA-256. El modelo se descarga desde la publicación oficial durante `uv sync` o la
+construcción de la imagen, que comprueba su carga. La inferencia no necesita red
+ni descarga el modelo. `NER_MODEL` vale `en_core_web_sm` por defecto; cualquier
+otro modelo debe estar instalado y ser compatible. Si falta, se devuelve un
+error específico, no una lista vacía engañosa.
+
+`NERService.detect_pages()` recibe una lista de textos de páginas y devuelve
+listas de `PersonSpan` en el mismo orden, incluidas páginas vacías. Los offsets
+son posiciones de caracteres Python dentro de cada página y el final es exclusivo;
+las apariciones repetidas se conservan. El servicio asíncrono ejecuta spaCy en
+procesos POSIX persistentes y creados bajo demanda, reutilizando el modelo dentro
+de cada proceso. El ciclo de vida de FastAPI mantiene un servicio por proceso de
+aplicación. Para código síncrono existen `SpacyPersonRecognizer` y
+`extract_names`; no deben ejecutarse directamente en el bucle asíncrono.
+
+| Variable | Default | Meaning / significado |
+|---|---:|---|
+| `NER_MODEL` | `en_core_web_sm` | Installed model / modelo instalado. |
+| `NER_MAX_PAGE_CHARS` | 100000 | Characters per page, at most 1000000 / caracteres por página, como máximo 1000000. |
+| `NER_MAX_DOCUMENT_CHARS` | 1000000 | Characters across pages / caracteres sumados entre páginas. |
+| `NER_MAX_CONCURRENT_JOBS` | 1 | Active NER workers per application process / procesos NER activos por proceso de aplicación. |
+| `NER_MAX_QUEUED_JOBS` | 1 | Additional queued jobs per application process / trabajos adicionales en espera por proceso. |
+| `NER_QUEUE_TIMEOUT_SECONDS` | 10 | Maximum queue wait / espera máxima en cola. |
+| `NER_JOB_TIMEOUT_SECONDS` | 60 | Worker startup and inference deadline / plazo para iniciar el proceso y ejecutar inferencia. |
+| `NER_SHUTDOWN_TIMEOUT_SECONDS` | 10 | Grace period for active work and worker exit / espera para trabajos activos y salida del proceso. |
+
+The existing `MAX_PDF_PAGES` also bounds the number of pages sent to NER. Limits
+are per process, not shared across HTTP workers or replicas; concurrency for the
+complete OCR-to-NER flow remains to be designed. On a timeout the worker is
+terminated; a cancelled caller does not release an already-running job's capacity
+until that work finishes or times out. Abrupt machine/container termination cannot
+guarantee cleanup. The English small model predicts entity labels: filtering
+`PERSON` does **not** guarantee all outputs are people or all people are found.
+Sample OCR/NER observations and their limitations are in `docs/TEST_LOG.md`.
+
+El límite existente `MAX_PDF_PAGES` también limita las páginas enviadas a NER.
+Los límites son por proceso, no globales entre workers HTTP o réplicas; aún falta
+diseñar la admisión del flujo completo OCR–NER. Ante un timeout se termina el
+proceso; si se cancela quien llama, un trabajo ya iniciado conserva su capacidad
+hasta terminar o agotar su plazo. Una caída abrupta de la máquina o contenedor no
+garantiza limpieza. El modelo pequeño de inglés predice etiquetas: filtrar
+`PERSON` **no** garantiza que todos los resultados sean personas ni que encuentre
+todos los nombres. Las observaciones y limitaciones están en `docs/TEST_LOG.md`.
 
 Test commands, observed results and incident resolutions are recorded in
 [`docs/TEST_LOG.md`](docs/TEST_LOG.md); human review results are recorded in
