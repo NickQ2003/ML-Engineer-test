@@ -228,8 +228,16 @@ gh repo fork anvasquezre-cuesta/ML-Engineer-test --clone=false
 
 **Respuesta observada:** `https://github.com/NickQ2003/ML-Engineer-test`.
 Se configuró ese fork como `origin` y el repositorio original como `upstream`.
-La publicación de la rama se verifica por separado; crear el fork no demuestra
-por sí solo que el push haya funcionado.
+Luego se publicó la rama en el fork:
+
+```bash
+GIT_TERMINAL_PROMPT=0 git push -u origin feature/document-intelligence
+```
+
+**Resultado observado:** se creó la rama remota
+`origin/feature/document-intelligence` y la rama local quedó configurada para
+seguirla. Esto resuelve la publicación en el fork, no concede permiso de
+escritura en el repositorio original. El pull request aún no se ha abierto.
 
 ### Comprobaciones pendientes
 
