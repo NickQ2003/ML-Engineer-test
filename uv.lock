@@ -355,6 +355,7 @@ name = "document-intelligence-service"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pillow" },
@@ -381,6 +382,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pillow" },
