@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://qdrant:6333"
     qdrant_collection: str = Field(default="documents", min_length=1)
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, gt=0)
+    # Includes the PDF, form fields, multipart boundaries and part headers.
+    max_request_bytes: int = Field(default=21 * 1024 * 1024, gt=0)
+    max_names_bytes: int = Field(default=64 * 1024, gt=0)
+    max_names_count: int = Field(default=1000, gt=0)
+    fuzzy_threshold: float = Field(default=0.90, ge=0.0, le=1.0, allow_inf_nan=False)
     max_pdf_pages: int = Field(default=100, gt=0)
     max_page_pixels: int = Field(default=20_000_000, gt=0)
     ocr_dpi: int = Field(default=200, ge=72, le=600)

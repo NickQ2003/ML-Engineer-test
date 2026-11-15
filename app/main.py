@@ -8,6 +8,7 @@ from app.api.extract import router as extract_router
 from app.api.rag import router as rag_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
+from app.core.request_limits import ExtractionBodyLimitMiddleware
 from app.models.schemas import HealthResponse
 from app.services.ocr_service import OCRService
 
@@ -25,6 +26,7 @@ async def lifespan(application: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
+app.add_middleware(ExtractionBodyLimitMiddleware, max_request_bytes=settings.max_request_bytes)
 
 app.include_router(extract_router, prefix="/api", tags=["extraction"])
 app.include_router(rag_router, prefix="/api", tags=["rag"])
