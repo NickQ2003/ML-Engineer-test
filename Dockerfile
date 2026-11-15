@@ -19,6 +19,9 @@ COPY --from=uv /uv /uvx /bin/
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project
 
+# Fail the build if the locked English model is absent or incompatible.
+RUN python -c "import spacy; assert 'ner' in spacy.load('en_core_web_sm').pipe_names"
+
 COPY app ./app
 RUN useradd --create-home --uid 10001 appuser
 USER appuser

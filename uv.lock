@@ -356,6 +356,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },
+    { name = "en-core-web-sm" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pillow" },
@@ -383,6 +384,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anyio" },
+    { name = "en-core-web-sm", url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pillow" },
@@ -396,13 +398,21 @@ requires-dist = [
     { name = "python-multipart" },
     { name = "qdrant-client" },
     { name = "sentence-transformers" },
-    { name = "spacy" },
+    { name = "spacy", specifier = ">=3.8.0,<3.9.0" },
     { name = "thefuzz" },
     { name = "torch", marker = "sys_platform != 'linux'" },
     { name = "torch", marker = "sys_platform == 'linux'", index = "https://download.pytorch.org/whl/cpu" },
     { name = "uvicorn", extras = ["standard"] },
 ]
 provides-extras = ["dev"]
+
+[[package]]
+name = "en-core-web-sm"
+version = "3.8.0"
+source = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
+wheels = [
+    { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl", hash = "sha256:1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85" },
+]
 
 [[package]]
 name = "fastapi"

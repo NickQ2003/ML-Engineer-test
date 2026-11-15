@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     max_names_bytes: int = Field(default=64 * 1024, gt=0)
     max_names_count: int = Field(default=1000, gt=0)
     fuzzy_threshold: float = Field(default=0.90, ge=0.0, le=1.0, allow_inf_nan=False)
+    ner_model: str = Field(default="en_core_web_sm", min_length=1)
+    ner_max_page_chars: int = Field(default=100_000, gt=0, le=1_000_000)
+    ner_max_document_chars: int = Field(default=1_000_000, gt=0)
+    ner_max_concurrent_jobs: int = Field(default=1, gt=0)
+    ner_max_queued_jobs: int = Field(default=1, ge=0)
+    ner_queue_timeout_seconds: float = Field(default=10.0, gt=0, allow_inf_nan=False)
+    ner_job_timeout_seconds: float = Field(default=60.0, gt=0, allow_inf_nan=False)
+    ner_shutdown_timeout_seconds: float = Field(default=10.0, gt=0, allow_inf_nan=False)
     max_pdf_pages: int = Field(default=100, gt=0)
     max_page_pixels: int = Field(default=20_000_000, gt=0)
     ocr_dpi: int = Field(default=200, ge=72, le=600)
@@ -34,6 +42,14 @@ class Settings(BaseSettings):
     ocr_document_timeout_seconds: float = Field(default=180.0, gt=0)
     ocr_shutdown_timeout_seconds: float = Field(default=10.0, gt=0)
     ocr_orientation_min_confidence: float = Field(default=80.0, ge=0, le=100)
+
+    @field_validator("ner_model")
+    @classmethod
+    def validate_ner_model(cls, value: str) -> str:
+        model = value.strip()
+        if not model:
+            raise ValueError("NER_MODEL must not be blank")
+        return model
 
     @field_validator("log_level", mode="before")
     @classmethod

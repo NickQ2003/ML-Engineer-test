@@ -10,6 +10,7 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.core.request_limits import ExtractionBodyLimitMiddleware
 from app.models.schemas import HealthResponse
+from app.services.ner_async import NERService
 from app.services.ocr_service import OCRService
 
 settings = get_settings()
@@ -19,10 +20,14 @@ settings = get_settings()
 async def lifespan(application: FastAPI):
     configure_logging(settings.log_level)
     application.state.ocr_service = OCRService(settings)
+    application.state.ner_service = NERService(settings)
     try:
         yield
     finally:
-        await application.state.ocr_service.aclose()
+        try:
+            await application.state.ner_service.aclose()
+        finally:
+            await application.state.ocr_service.aclose()
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
