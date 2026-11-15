@@ -66,9 +66,37 @@
   container capped at 2 GiB. This is not a production capacity guarantee; see
   [the measurement and its limitations](docs/OCR_MEMORY_CALIBRATION.md).
 
+## Extraction input contracts and request byte guard
+
+- **Decision:** retain the public schemas unchanged. Introduce an immutable,
+  page-local `PersonSpan` and validate the future `names` JSON against the
+  existing `NamePair`, rejecting blank names without rewriting the original
+  strings. Bound the UTF-8 size of the decoded field to 64 KiB and its list to
+  1,000 items by default; allow an empty list. Reserve a configurable, finite
+  fuzzy threshold of 0.90 without implementing fuzzy matching yet.
+- **HTTP protection:** for `POST /api/extract`, limit the complete consumed body
+  to 21 MiB by default, including multipart overhead. Reject a declared excessive
+  length early, reject malformed/repeated lengths, and count received bytes even
+  when the header is absent or false. The separate OCR PDF limit remains 20 MiB.
+- **Implementation trade-off:** the pure ASGI guard raises a private
+  `BaseException` control signal to escape FastAPI's generic body-parse error
+  handling and return `413`. With the locked Starlette version the multipart
+  parser closes temporary files when unwinding; tests cover a file rolled to disk,
+  cancellation and a real chunked HTTP request. This behavior must be rechecked
+  when upgrading Starlette or changing middleware layers. If a response has
+  already started, the guard propagates the error rather than sending a second
+  response; the ASGI server must handle the interrupted response.
+- **Limits:** the guard only counts bytes the application reads; it is not a
+  concurrent-upload admission limit or a slow-upload deadline. The `names`
+  validator runs after multipart parsing and is not yet wired to a real endpoint.
+  FastAPI's default 1 MiB per-text-field parser limit can yield `400` before the
+  validator; the endpoint integration must address the planned `413` mapping.
+  Global worker/replica limits and real `/api/extract` testing remain pending.
+
 ## Use of AI tools
 
-OpenCode was used to help plan and implement infrastructure and OCR, translate
-the README, investigate CUDA image size and review findings, and document and
-run checks. The project author remains responsible for reviewing, understanding,
-and validating the resulting code and decisions.
+OpenCode was used to help plan and implement infrastructure, OCR and the initial
+extraction input safeguards, translate the README, investigate CUDA image size
+and review findings, and document and run checks. The project author remains
+responsible for reviewing, understanding, and validating the resulting code and
+decisions.

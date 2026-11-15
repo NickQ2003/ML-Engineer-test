@@ -468,11 +468,50 @@ quien lo espera; al cerrar, se termina su grupo de procesos tras el plazo de
 espera. No es una cola persistente ni garantiza limpieza ante la caída abrupta
 de la máquina o del contenedor.
 
-The async OCR interface is not yet exposed by an HTTP extraction endpoint. / La
-interfaz OCR asíncrona aún no está conectada a un endpoint HTTP de extracción.
+The extraction endpoint is still **not implemented**. Its first building blocks
+are in place: a `POST /api/extract` ASGI body guard, a page-local person-span
+contract and a `names` JSON validator. The validator is not wired to a real HTTP
+endpoint yet; `FUZZY_THRESHOLD` is configured but matching is not implemented.
+
+El endpoint de extracción **todavía no está implementado**. Sus primeras piezas
+ya existen: un límite ASGI para el cuerpo de `POST /api/extract`, un contrato
+interno de spans de personas por página y un validador JSON de `names`. Este
+validador aún no está conectado a un endpoint real; `FUZZY_THRESHOLD` está
+configurado pero la coincidencia aproximada aún no está implementada.
+
+| Variable | Default | Scope / alcance |
+|---|---:|---|
+| `MAX_REQUEST_BYTES` | 22020096 (21 MiB) | Entire extraction request body, including multipart boundaries, part headers, fields and file / cuerpo completo, incluidos separadores multipart, cabeceras de partes, campos y archivo. |
+| `MAX_UPLOAD_BYTES` | 20971520 (20 MiB) | PDF limit already enforced by OCR, separately from the request body / límite del PDF ya aplicado por OCR, independiente del cuerpo. |
+| `MAX_NAMES_BYTES` | 65536 (64 KiB) | UTF-8 size of the **decoded form field**, including JSON syntax; checked after multipart parsing / tamaño UTF-8 del **campo decodificado**, incluida la sintaxis JSON; se verifica después de procesar multipart. |
+| `MAX_NAMES_COUNT` | 1000 | Maximum number of pairs; an empty list is valid / máximo de parejas; una lista vacía es válida. |
+| `FUZZY_THRESHOLD` | 0.90 | Future matching threshold, finite and within `0..1` / futuro umbral de comparación, finito y entre `0..1`. |
+
+The body guard counts the actual ASGI chunks consumed by the application even
+when `Content-Length` is missing or too small. It returns `413` when that limit
+is exceeded, and `400` for malformed or repeated `Content-Length` headers. It
+does not consume a body that the application never reads, and a response already
+started cannot be changed to `413`: the future endpoint must read the body before
+responding. The guard does **not** limit concurrent uploads or their reading time.
 Admission before multipart parsing and global limits across HTTP workers remain
-to be implemented. / La admisión antes de procesar multipart y los límites
-globales entre workers HTTP siguen pendientes.
+pending. The `names` validator reports distinct invalid-input and limit errors;
+the future endpoint still has to map them to HTTP responses. FastAPI's default
+multipart parser can itself return `400` for a text field larger than 1 MiB before
+that validator runs; integration must resolve this if the planned `413` is to be
+consistent for oversized fields.
+
+El límite del cuerpo cuenta los fragmentos ASGI que consume la aplicación aunque
+falte `Content-Length` o declare menos bytes. Devuelve `413` al superar el límite
+y `400` si `Content-Length` es inválido o está repetido. No consume cuerpos que
+la aplicación no lee y no puede cambiar a `413` una respuesta ya iniciada: el
+futuro endpoint debe leer el cuerpo antes de responder. El límite **no** controla
+la concurrencia ni el tiempo de lectura de las cargas. La admisión previa al
+parseo multipart y los límites globales entre workers HTTP siguen pendientes.
+El validador de `names` distingue entrada inválida de límite excedido; el futuro
+endpoint aún debe traducir esos errores a HTTP. El parser multipart por defecto
+de FastAPI puede devolver `400` ante un campo de texto mayor de 1 MiB antes de que
+se ejecute el validador; la integración debe resolverlo para que el `413` previsto
+sea coherente con todos los campos excesivos.
 
 Test commands, observed results and incident resolutions are recorded in
 [`docs/TEST_LOG.md`](docs/TEST_LOG.md); human review results are recorded in

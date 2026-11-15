@@ -770,6 +770,89 @@ no incluye toda la aplicación ni prueba el peor caso, y no constituye calibraci
 para producción. Entorno, comandos, resultados y limitaciones completos en
 [OCR_MEMORY_CALIBRATION.md](OCR_MEMORY_CALIBRATION.md).
 
+## 2026-11-15 — Hito 3: contratos y límites de entrada
+
+**Entorno:** Docker sobre macOS ARM64; contenedor Linux aarch64, Python 3.12.16,
+FastAPI 0.163.0, Starlette 1.10.0, Uvicorn 0.54.0 y pytest 9.2.0. Pytest se
+instaló solo en el contenedor temporal de pruebas, no en la imagen de producción.
+
+**Cambios comprobados:** contrato interno de span por página; validador de `names`
+con límites de bytes UTF-8 y cantidad; configuración validada; middleware ASGI
+de bytes por cuerpo para `POST /api/extract`. No se modificaron los esquemas
+públicos ni se implementó el endpoint, NER o fuzzy matching.
+
+### Validación inicial y construcción
+
+```bash
+docker compose config --quiet
+docker compose build app
+git diff --check
+git diff -- app/models/schemas.py
+```
+
+`docker compose config --quiet` y los dos comandos `git diff` terminaron sin salida;
+la imagen se construyó correctamente. El último comando confirma que el archivo de
+esquemas públicos no cambió. También se ejecutó la batería focalizada durante el
+desarrollo con el código montado de solo lectura; las dos ejecuciones recogieron
+68 y 70 pruebas respectivamente, todas aprobadas.
+
+```bash
+docker run --rm \
+  -v "$PWD/app:/app/app:ro" \
+  -v "$PWD/tests:/tests:ro" \
+  --entrypoint /bin/sh ml-engineer-test-app:latest \
+  -c 'uv pip install --target /tmp/test-deps "pytest==9.2.0" && PYTHONPATH=/tmp/test-deps:/app python -m pytest -p no:cacheprovider /tests/unit/test_config.py /tests/unit/test_extraction_contracts.py /tests/integration/test_extraction_request_limits.py'
+```
+
+### Batería completa en la imagen reconstruida
+
+```bash
+docker run --rm \
+  -v "$PWD/tests:/tests:ro" \
+  -v "$PWD/sample_pdfs:/samples:ro" \
+  -e SAMPLE_PDFS_DIR=/samples \
+  --entrypoint /bin/sh ml-engineer-test-app:latest \
+  -c 'uv pip install --target /tmp/test-deps "pytest==9.2.0" && PYTHONPATH=/tmp/test-deps:/app python -m pytest -p no:cacheprovider /tests/unit /tests/integration'
+```
+
+**Salida final observada (abreviada):**
+
+```text
+platform linux -- Python 3.12.16, pytest-9.2.0
+collected 146 items
+tests/unit/test_config.py ...................
+tests/unit/test_extraction_contracts.py ...
+tests/integration/test_extraction_request_limits.py ...
+tests/integration/test_ocr_real.py .......................
+tests/integration/test_worker_cleanup.py ..
+146 passed in 20.12s
+```
+
+La batería incluye solicitudes multipart fragmentadas sin `Content-Length`, con
+longitud exacta y con longitud falsamente pequeña a nivel ASGI; rechazo anticipado
+de longitud declarada excesiva o mal formada; límites exactos y exceso de `names`;
+y una solicitud `chunked` por HTTP real contra Uvicorn. Se comprobó que el archivo
+temporal multipart se cierra ante exceso, cancelación y desconexión, reduciendo el
+umbral de volcado a disco durante esas pruebas. También se comprobó que no se
+envía una segunda respuesta si el exceso se detecta después de iniciar una.
+
+**Resultado:** correcto para los componentes y rutas simuladas probados. La ruta
+HTTP real de extracción aún no existe; las pruebas de multipart utilizan un
+endpoint de prueba y no demuestran el flujo OCR/NER. El middleware cuenta solo
+bytes que la aplicación lee y no limita cargas concurrentes ni el tiempo de
+lectura. La validación de `names` debe conectarse al implementar el endpoint.
+
+**Hallazgo pendiente:** en la ruta simulada, FastAPI/Starlette devuelve `400` al
+rechazar un campo multipart mayor de 1 MiB antes de ejecutar el validador. La
+integración real debe resolver el parseo y la traducción de errores para cumplir
+la respuesta `413` prevista para campos excesivos. Debe mantenerse la prueba de
+limpieza al actualizar Starlette, ya que el middleware depende de su manejo de
+errores del parser.
+
+**Contenedores en ejecución:** se construyó la imagen nueva sin reiniciar el
+servicio Compose existente; este continúa usando la imagen anterior hasta que se
+recree. No se afirmó que el servicio ya activo esté ejecutando el código nuevo.
+
 ## Plantilla para próximas ejecuciones
 
 ````markdown

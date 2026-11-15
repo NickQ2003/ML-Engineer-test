@@ -28,7 +28,9 @@ validar; cualquier cambio de diseño debe registrarse en `DECISIONS.md`.
 | 6 | R-06 | Baja | `LOG_LEVEL` se configura pero no se aplica | Corregido y probado |
 
 La admisión antes de procesar multipart y el uso de la dependencia compartida
-deben verificarse al implementar el endpoint real. Los límites siguen siendo por
+deben verificarse al implementar el endpoint real. Ahora existe un límite ASGI de
+bytes por solicitud para `/api/extract`; no equivale a una admisión de cargas
+concurrentes ni limita el tiempo de lectura. Los límites de OCR siguen siendo por
 proceso y no hay garantía de limpieza ante una caída abrupta de toda la máquina.
 
 ## Implementación posterior a la revisión
@@ -50,7 +52,9 @@ proceso y no hay garantía de limpieza ante una caída abrupta de toda la máqui
 - **R-04:** límites por proceso de trabajos activos y en cola, espera máxima,
   timeout de lectura y `extract_stream_async()` que adquiere admisión antes de
   leer. Un llamador que entregue `bytes` ya los habrá acumulado; el futuro HTTP
-  debe controlar la carga antes del parseo multipart y manejar saturación.
+  debe controlar la concurrencia de cargas antes del parseo multipart y manejar
+  saturación. El nuevo límite ASGI por cuerpo rechaza el exceso mientras se leen
+  fragmentos, pero no limita la cantidad ni la duración de cargas simultáneas.
 - **R-05:** el servicio se crea en el ciclo de vida FastAPI y se obtiene por
   `app.api.dependencies.get_ocr_service`. Se prueba con solicitudes concurrentes
   sobre una ruta de prueba; `/api/extract` todavía no existe.
