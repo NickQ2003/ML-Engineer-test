@@ -9,6 +9,7 @@ from app.services.ocr_service import (
     InvalidPDFError,
     OCRProcessingError,
     OCRService,
+    PDFPageTooLargeError,
     PDFTooLargeError,
 )
 
@@ -74,7 +75,16 @@ def test_coordinate_transform_with_rotation_and_crop(monkeypatch, rotation, crop
             x0, y0, x1, y1 = pix.height - y1, x0, pix.height - y0, x1
         row = ("Name", x0, y0, x1 - x0, y1 - y0, 1, 1, 1, 95)
 
-    monkeypatch.setattr("app.services.ocr_service.pytesseract.image_to_data", lambda *a, **kw: ocr_data([row]))
+    calls = 0
+
+    def fake_ocr(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if rotation and calls == 1:
+            return ocr_data([("uncertain", 1, 1, 10, 10, 1, 1, 1, 1)])
+        return ocr_data([row])
+
+    monkeypatch.setattr("app.services.ocr_service.pytesseract.image_to_data", fake_ocr)
     result = OCRService(Settings(ocr_dpi=144)).extract(pdf)
     box = result.pages[0].words[0].box
     assert (box.x, box.y, box.width, box.height) == pytest.approx((20, 30, 40, 15))
@@ -122,6 +132,27 @@ def test_extract_file_rejects_oversized_file(tmp_path):
 def test_rejects_too_many_pages():
     with pytest.raises(InvalidPDFError, match="page limit"):
         OCRService(Settings(max_pdf_pages=1)).extract(make_pdf(pages=2))
+
+
+def test_large_page_rejected_before_rendering(monkeypatch):
+    with pymupdf.open() as document:
+        document.new_page(width=10000, height=10000)
+        pdf = document.tobytes()
+
+    def unexpected_render(*args, **kwargs):
+        raise AssertionError("large page must be rejected before rendering")
+
+    monkeypatch.setattr(pymupdf.Page, "get_pixmap", unexpected_render)
+    with pytest.raises(PDFPageTooLargeError, match="pixel"):
+        OCRService().extract(pdf)
+
+
+def test_rendered_pixel_limit_accounts_for_dpi(monkeypatch):
+    monkeypatch.setattr("app.services.ocr_service.pytesseract.image_to_data", lambda *a, **kw: ocr_data([]))
+    pdf = make_pdf()
+    assert OCRService(Settings(ocr_dpi=72, max_page_pixels=121_000)).extract(pdf).pages
+    with pytest.raises(PDFPageTooLargeError):
+        OCRService(Settings(ocr_dpi=144, max_page_pixels=121_000)).extract(pdf)
 
 
 def test_rejects_password_protected_pdf():
