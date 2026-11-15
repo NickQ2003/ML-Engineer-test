@@ -17,6 +17,42 @@
   `None`; a tensor operation and `sentence-transformers` import succeeded. See
   [the test log](docs/TEST_LOG.md) for commands and observed results.
 
+## OCR coordinates and resource limits
+
+- **Decision:** OCR every page once per structured extraction and retain each
+  word's box, page-local text offsets and line identifiers. Boxes use PDF points
+  relative to the top-left of the unrotated crop box. PDF rotation metadata is
+  undone before Tesseract and incorporated in the coordinate transformation.
+- **Why:** page-local offsets preserve the relationship between recognized text
+  and words for later NER, while crop-relative coordinates provide a consistent
+  convention for rotated and cropped pages.
+- **Trade-offs:** PDF rotation metadata does not correct arbitrary scan skew or
+  upside-down images without metadata. The default image includes only English
+  language data. Byte size, page count, DPI and Tesseract timeout are bounded and
+  configurable; a separate rendered-pixel limit and upload/HTTP validation remain
+  to be implemented. The public extraction endpoint is not implemented yet.
+- **Review status:** the current unconditional derotation fails when PDF
+  rotation metadata corrects a physically rotated scan. A correction is planned
+  in [the OCR review plan](docs/OCR_REVIEW_PLAN.md#r-03--orientación-de-pdf-y-escaneo).
+
+## Asynchronous OCR without changing the API contract
+
+- **Decision:** expose asynchronous OCR methods that dispatch blocking PDF and
+  Tesseract work to AnyIO worker processes. A reusable service shares a
+  configurable capacity limiter; the default is two jobs per application process.
+  The synchronous methods remain available for non-async callers.
+- **Why:** simply making a function `async` would not make PyMuPDF and Tesseract
+  non-blocking. Process isolation also avoids parallel PyMuPDF work in threads.
+- **Trade-offs:** each application worker has its own concurrency limit; queued
+  callers and already-uploaded data are not globally bounded. A started task is
+  shielded from AnyIO scope cancellation so the OCR worker can finish and clean
+  up, which can consume resources after cancellation. There is no durable queue or
+  job-status API. The future endpoint must reuse `get_ocr_service()` and await
+  the result without changing the fixed response contract.
+- **Review status:** direct `asyncio.Task.cancel()` can terminate the worker
+  while leaving a Tesseract subprocess and temporary files. See
+  [the OCR review plan](docs/OCR_REVIEW_PLAN.md#r-02--cancelación-y-limpieza-de-procesos).
+
 ## Use of AI tools
 
 OpenCode was used to help plan and implement the initial infrastructure, translate

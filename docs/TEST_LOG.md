@@ -246,6 +246,407 @@ escritura en el repositorio original. El pull request aún no se ha abierto.
 - Comprobar el adaptador Qdrant, modelos reales y endpoints de extracción y RAG
   cuando se implementen; no forman parte de las pruebas ya ejecutadas.
 
+## 2026-11-14 — Hito 2: OCR y coordenadas
+
+**Entorno:** Docker Linux ARM64, Python 3.12.16, Tesseract y datos de inglés
+incluidos en la imagen. Los archivos de aplicación y pruebas se montaron desde
+el árbol de trabajo para verificar los cambios antes de reconstruir la imagen.
+
+### Pruebas iniciales y cierre de recursos
+
+En la primera ejecución de la batería OCR, la salida relevante fue:
+
+```text
+1 failed, 18 passed
+test_wraps_ocr_failures_and_closes_images: DID NOT RAISE ValueError
+```
+
+**Diagnóstico:** el administrador de contexto de una imagen Pillow en memoria
+no cerraba el recurso de la manera que exigía la prueba ante un error de OCR.
+**Solución:** usar `contextlib.closing` para liberar explícitamente las imágenes;
+la prueba posterior también verifica el cierre del documento PDF al fallar OCR.
+
+### Prueba de rotación y corrección
+
+Se ejecutó OCR real sobre PDF sintéticos escaneados con diferentes rotaciones.
+Antes de la corrección, con los mismos caracteres de prueba, la salida fue:
+
+```text
+rotation 0 text 'ALICE SMITH'
+rotation 90 text 'ALICE SMITH'
+rotation 180 text 'HLINS S0N1V'
+rotation 270 text 'HLINS S0N1V'
+```
+
+**Diagnóstico:** el renderizado respetaba la rotación del PDF, pero Tesseract
+podía leer el texto invertido. **Solución:** normalizar la orientación usando
+los metadatos del PDF antes de OCR y transformar los cuadros de vuelta a puntos
+del área de recorte sin rotar. No es una corrección general de inclinación ni de
+escaneos invertidos sin metadatos.
+
+### OCR real sobre PDF de ejemplo
+
+```bash
+docker run --rm \
+  -v "$PWD/app:/app/app:ro" \
+  -v "$PWD/sample_pdfs:/samples:ro" \
+  --entrypoint python ml-engineer-test-app:latest \
+  -c 'from pathlib import Path; from app.services.ocr_service import OCRService; svc = OCRService(); [(print(path.name, "pages:", len(doc.pages), "words:", [len(page.words) for page in doc.pages], "dimensions:", [(round(page.width), round(page.height)) for page in doc.pages])) for path in sorted(Path("/samples").glob("*.pdf")) for doc in [svc.extract_file(path)]]'
+```
+
+**Salida observada antes del ajuste de orientación:**
+
+```text
+company_memo.pdf pages: 1 words: [143] dimensions: [(612, 792)]
+meeting_minutes.pdf pages: 2 words: [149, 134] dimensions: [(612, 792), (612, 792)]
+research_report.pdf pages: 2 words: [129, 134] dimensions: [(612, 792), (612, 792)]
+```
+
+Los tres documentos se volvieron a procesar en la batería posterior. La cantidad
+de palabras depende del motor y sus datos; no demuestra por sí sola precisión de
+NER ni de cuadros de nombres.
+
+### Batería final: unitarias e integración OCR
+
+```bash
+docker run --rm \
+  -v "$PWD/app:/app/app:ro" \
+  -v "$PWD/tests:/tests:ro" \
+  -v "$PWD/sample_pdfs:/samples:ro" \
+  -e SAMPLE_PDFS_DIR=/samples \
+  --entrypoint /bin/sh ml-engineer-test-app:latest \
+  -c 'uv pip install --target /tmp/test-deps "pytest==9.2.0" && PYTHONPATH=/tmp/test-deps:/app python -m pytest -p no:cacheprovider /tests/unit /tests/integration/test_ocr_real.py'
+```
+
+**Salida observada:**
+
+```text
+collected 33 items
+tests/unit/test_config.py .
+tests/unit/test_cpu_dependencies.py .
+tests/unit/test_health.py .
+tests/unit/test_ocr_service.py ...................
+tests/integration/test_ocr_real.py ...........
+33 passed in 6.86s
+```
+
+Se probaron las tres muestras y PDF sintéticos escaneados con las cuatro
+rotaciones y con/sin recorte. Las pruebas sintéticas verifican que el centro del
+cuadro OCR de una palabra coincida con su ubicación esperada; no garantizan
+precisión perfecta de todos los bordes o de cualquier documento. También se
+probaron límites de entrada, PDF inválidos y cifrados y limpieza ante error.
+
+Después se reconstruyó la imagen y se verificó el servicio:
+
+```bash
+docker compose up --build -d
+curl --fail --silent --show-error http://localhost:8000/health
+```
+
+**Resultado observado:** ambos contenedores iniciaron y `/health` respondió
+`{"status":"ok"}`. Se repitió la batería usando el código incluido en la imagen
+reconstruida, sin montar `app/` desde el host:
+
+```bash
+docker run --rm \
+  -v "$PWD/tests:/tests:ro" \
+  -v "$PWD/sample_pdfs:/samples:ro" \
+  -e SAMPLE_PDFS_DIR=/samples \
+  --entrypoint /bin/sh ml-engineer-test-app:latest \
+  -c 'uv pip install --target /tmp/test-deps "pytest==9.2.0" && PYTHONPATH=/tmp/test-deps:/app python -m pytest -p no:cacheprovider /tests/unit /tests/integration/test_ocr_real.py'
+```
+
+**Salida relevante:** `33 passed in 7.32s`.
+
+**Pendientes:** implementar validación HTTP y el endpoint de extracción, NER,
+un límite de píxeles renderizados, pruebas en x86_64 y persistencia de Qdrant.
+El idioma instalado es inglés; otros idiomas requieren datos adicionales.
+
+## 2026-11-15 — Hito 2: ejecución asíncrona del OCR
+
+**Objetivo:** no bloquear el bucle de eventos mientras se procesan PDF y limitar
+el número de trabajos OCR simultáneos sin cambiar el contrato HTTP de la prueba.
+**Entorno:** imagen Docker Linux ARM64 reconstruida, Python 3.12.16, Tesseract
+en inglés y pytest 9.2.0 instalado en el contenedor temporal de pruebas.
+
+**Implementación:** `extract_async` y `extract_file_async` envían el trabajo
+bloqueante a procesos de AnyIO, evitando ejecución paralela de PyMuPDF en hilos.
+`get_ocr_service()` permite reutilizar el servicio y su limitador. El valor
+`OCR_MAX_CONCURRENT_JOBS` es configurable y predetermina 2 por proceso de la
+aplicación. El endpoint HTTP todavía no está implementado.
+
+### Construcción y comprobación de configuración
+
+```bash
+uv lock --python 3.12
+docker compose up --build -d
+```
+
+**Resultado observado:** `uv` resolvió 106 paquetes; Docker construyó la imagen
+y arrancó la aplicación. Se agregó `anyio` como dependencia directa y se actualizó
+`uv.lock`.
+
+Se comprobó además la coherencia del bloqueo con `uv lock --check --python 3.12`
+(106 paquetes resueltos) y que `docker compose config --quiet` terminó sin error.
+Tras el arranque, `docker compose ps` mostró `app` y `qdrant` activos; `curl
+--fail --silent --show-error http://localhost:8000/health` devolvió
+`{"status":"ok"}`. Dentro de la aplicación se comprobó:
+
+```bash
+docker compose exec -T app python -c "from app.core.config import get_settings; from app.services.ocr_service import get_ocr_service; print('OCR_MAX_CONCURRENT_JOBS:', get_settings().ocr_max_concurrent_jobs); print('shared_service:', get_ocr_service() is get_ocr_service())"
+```
+
+**Salida observada:**
+
+```text
+OCR_MAX_CONCURRENT_JOBS: 2
+shared_service: True
+```
+
+### Pruebas unitarias e integración en la imagen reconstruida
+
+```bash
+docker run --rm \
+  -v "$PWD/tests:/tests:ro" \
+  -v "$PWD/sample_pdfs:/samples:ro" \
+  -e SAMPLE_PDFS_DIR=/samples \
+  --entrypoint /bin/sh ml-engineer-test-app:latest \
+  -c 'uv pip install --target /tmp/test-deps "pytest==9.2.0" && PYTHONPATH=/tmp/test-deps:/app python -m pytest -p no:cacheprovider /tests/unit /tests/integration'
+```
+
+**Salida relevante observada:**
+
+```text
+collected 44 items
+tests/unit/test_config.py .
+tests/unit/test_cpu_dependencies.py .
+tests/unit/test_health.py .
+tests/unit/test_ocr_async.py ........
+tests/unit/test_ocr_service.py ...................
+tests/integration/test_async_http.py .
+tests/integration/test_ocr_real.py .............
+44 passed in 16.76s
+```
+
+Se verificaron, entre otros: ejecución en un proceso distinto, bucle de eventos
+no bloqueado, límite de concurrencia, errores de validación, rechazo de archivos
+grandes antes de enviarlos al proceso, cancelación de una tarea en espera,
+finalización de un trabajo ya iniciado ante cancelación con AnyIO y OCR real por
+las interfaces de bytes y de archivo. Una prueba usa una ruta OCR simulada y la
+ruta real `/health` para comprobar que esta última siga respondiendo; no prueba
+el futuro endpoint `/api/extract`.
+
+**Limitaciones:** el límite se aplica por proceso de aplicación, no globalmente;
+no limita el número de solicitudes en cola ni la memoria de cargas ya recibidas.
+No es una cola persistente: si el proceso termina, no hay garantía de conservar
+el trabajo. Falta probar los endpoints reales cuando se implementen y validar
+el comportamiento en Linux x86_64.
+
+## 2026-11-15 — Revisión de OCR y concurrencia
+
+**Estado:** revisión completada; las correcciones siguen pendientes. El plan y
+los criterios de aceptación están en [OCR_REVIEW_PLAN.md](OCR_REVIEW_PLAN.md).
+Se repitió el comando de la batería anterior en la imagen construida y se observó
+`44 passed in 17.34s`. Las reproducciones siguientes usaron contenedores
+temporales Linux ARM64; no se cambiaron los PDF de ejemplo.
+
+### Página enorme: detección sin reservar la imagen
+
+Se interceptó `get_pixmap()` para observar la reserva que se intentaría hacer,
+sin asignar realmente los más de 2 GB estimados para una copia RGB:
+
+```bash
+docker run --rm -i -v "$PWD/app:/app/app:ro" --entrypoint python ml-engineer-test-app:latest - <<'PY'
+import pymupdf
+from app.services.ocr_service import OCRService, OCRProcessingError
+with pymupdf.open() as doc:
+    doc.new_page(width=10000, height=10000)
+    data=doc.tobytes()
+original=pymupdf.Page.get_pixmap
+def intercepted(page, *args, **kwargs):
+    scale=200/72
+    print('Input bytes:',len(data))
+    print('Approximate rendered pixels:',round(page.rect.width*scale)*round(page.rect.height*scale))
+    print('Approximate RGB bytes for one copy:',3*round(page.rect.width*scale)*round(page.rect.height*scale))
+    raise RuntimeError('render intercepted before allocation')
+pymupdf.Page.get_pixmap=intercepted
+try:
+    OCRService().extract(data)
+except OCRProcessingError as exc:
+    print('Reached rendering instead of rejecting:',str(exc))
+finally:
+    pymupdf.Page.get_pixmap=original
+PY
+```
+
+**Salida observada:**
+
+```text
+Input bytes: 522
+Approximate rendered pixels: 771617284
+Approximate RGB bytes for one copy: 2314851852
+Reached rendering instead of rejecting: OCR failed on page 0
+```
+
+**Resultado:** incorrecto para una protección de recursos suficiente. Se abrió
+R-01; no se ha aplicado aún un límite de píxeles.
+
+### Rotación de metadatos que corrige un escaneo girado
+
+Se construyó un PDF sintético con imagen físicamente girada y rotación de
+metadatos que la muestra derecha, y se comparó OCR real sobre la vista con el
+resultado del servicio:
+
+```bash
+docker run --rm -i -v "$PWD/app:/app/app:ro" --entrypoint python ml-engineer-test-app:latest - <<'PY'
+from io import BytesIO
+from PIL import Image
+import pymupdf, pytesseract
+from app.services.ocr_service import OCRService
+with pymupdf.open() as d:
+    p=d.new_page(width=400,height=300)
+    p.insert_text((40,100),'ALICE SMITH',fontsize=32)
+    p.insert_text((40,150),'JOHN ANDERSON',fontsize=32)
+    pix=p.get_pixmap(matrix=pymupdf.Matrix(2,2),alpha=False)
+    im=Image.frombytes('RGB',(pix.width,pix.height),pix.samples)
+    sideways=im.rotate(90,expand=True)
+    b=BytesIO(); sideways.save(b,format='PNG')
+    with pymupdf.open() as doc:
+        sp=doc.new_page(width=300,height=400)
+        sp.insert_image(sp.rect,stream=b.getvalue())
+        sp.set_rotation(90)
+        visible=sp.get_pixmap(matrix=pymupdf.Matrix(2,2),alpha=False)
+        visible_img=Image.frombytes('RGB',(visible.width,visible.height),visible.samples)
+        print('Displayed orientation OCR:',repr(pytesseract.image_to_string(visible_img,lang='eng').strip()))
+        print('Service OCR:',repr(OCRService().extract(doc.tobytes()).text))
+        visible_img.close()
+    im.close(); sideways.close()
+PY
+```
+
+**Salida observada:**
+
+```text
+Displayed orientation OCR: 'ALICE SMITH\nJOHN ANDERSON'
+Service OCR: 'NOSdYsAdNV NHOPr\nHLINWIS S0NIV'
+```
+
+**Resultado:** incorrecto. Se abrió R-03; la normalización de rotación sigue
+pendiente de corrección.
+
+### Cancelación directa durante un subprocesso OCR
+
+Se sustituyó temporalmente el ejecutable de Tesseract dentro del contenedor por
+un proceso controlado de larga duración, conservando la comprobación real de
+versión. El proceso simulado se detuvo antes de terminar la prueba:
+
+```bash
+docker run --rm -i -v "$PWD/app:/app/app:ro" -v "$PWD/sample_pdfs:/samples:ro" --entrypoint python ml-engineer-test-app:latest - <<'PY'
+import asyncio, os, signal
+from pathlib import Path
+from app.services.ocr_service import OCRService
+fake=Path('/tmp/review-fakebin'); fake.mkdir()
+tesseract=fake/'tesseract'
+tesseract.write_text('#!/bin/sh\nif [ "$1" = "--version" ]; then exec /usr/bin/tesseract --version; fi\necho $$ > /tmp/review-tesseract.pid\nexec sleep 30\n')
+tesseract.chmod(0o755)
+os.environ['PATH']=str(fake)+':'+os.environ['PATH']
+async def main():
+    marker=Path('/tmp/review-tesseract.pid')
+    task=asyncio.create_task(OCRService().extract_file_async('/samples/company_memo.pdf'))
+    async with asyncio.timeout(15):
+        while not marker.exists(): await asyncio.sleep(.02)
+    pid=int(marker.read_text())
+    task.cancel()
+    try: await task
+    except asyncio.CancelledError: pass
+    print('Tesseract survived:',Path(f'/proc/{pid}/status').exists())
+    print('Tesseract-related temp files left:',len(list(Path('/tmp').glob('tess_*'))))
+    try: os.kill(pid,signal.SIGKILL)
+    except ProcessLookupError: pass
+asyncio.run(main())
+PY
+```
+
+**Salida observada:**
+
+```text
+Tesseract survived: True
+Tesseract-related temp files left: 2
+```
+
+**Resultado:** incorrecto. Se abrió R-02; la prueba actual de cancelación AnyIO
+no cubre esta cancelación directa. El contenedor temporal se eliminó al finalizar.
+
+### Capacidad e inicialización concurrente
+
+Con el único permiso del limitador ocupado, se lanzaron cuatro llamadas con
+entradas instrumentadas de 1 MB:
+
+```bash
+docker run --rm -i -v "$PWD/app:/app/app:ro" --entrypoint python ml-engineer-test-app:latest - <<'PY'
+import asyncio
+from app.core.config import Settings
+from app.services.ocr_service import OCRService
+calls=[]
+class TrackedBytes(bytes):
+    def __reduce_ex__(self, protocol):
+        calls.append(len(self))
+        return bytes, (bytes(self),)
+async def main():
+    service=OCRService(Settings(ocr_max_concurrent_jobs=1))
+    async with service._process_limiter:
+        tasks=[asyncio.create_task(service.extract_async(TrackedBytes(b'x'*1_000_000))) for _ in range(4)]
+        await asyncio.sleep(.1)
+        print('jobs waiting with no capacity: 4')
+        print('payloads already serialized:',len(calls))
+        print('total payload bytes already serialized:',sum(calls))
+        for task in tasks: task.cancel()
+        await asyncio.gather(*tasks,return_exceptions=True)
+asyncio.run(main())
+PY
+```
+
+**Salida observada:**
+
+```text
+jobs waiting with no capacity: 4
+payloads already serialized: 4
+total payload bytes already serialized: 4000000
+```
+
+Se llamó también al proveedor desde cuatro hilos usando una barrera en una
+implementación simulada del constructor:
+
+```bash
+docker run --rm -i -v "$PWD/app:/app/app:ro" --entrypoint python ml-engineer-test-app:latest - <<'PY'
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+import app.services.ocr_service as mod
+barrier=Barrier(4)
+class FakeService:
+    def __init__(self):
+        barrier.wait(timeout=10)
+mod.OCRService=FakeService
+mod.get_ocr_service.cache_clear()
+with ThreadPoolExecutor(max_workers=4) as pool:
+    instances=list(pool.map(lambda _:mod.get_ocr_service(),range(4)))
+print('concurrent first calls:',len(instances))
+print('distinct service instances:',len({id(s) for s in instances}))
+print('sequential subsequent calls share instance:',mod.get_ocr_service() is mod.get_ocr_service())
+PY
+```
+
+**Salida observada:**
+
+```text
+concurrent first calls: 4
+distinct service instances: 4
+sequential subsequent calls share instance: True
+```
+
+**Resultado:** R-04 y R-05 siguen abiertos; los detalles y las decisiones
+propuestas están en el plan.
+
 ## Plantilla para próximas ejecuciones
 
 ````markdown

@@ -423,18 +423,55 @@ curl http://localhost:8000/health
 ```
 
 `GET /health` is a liveness check for the API, not a Qdrant readiness check.
-At this stage, extraction and RAG endpoints are not implemented; the Qdrant
-connection, model setup and LLM integration will be added in later milestones.
+At this stage, the OCR service can process PDFs, but extraction and RAG endpoints
+are not implemented; the Qdrant connection, model setup and LLM integration will
+be added in later milestones.
 
 `GET /health` comprueba que la API está viva, no que Qdrant esté preparado.
-En esta etapa aún no están implementados los endpoints de extracción y RAG; la
-conexión con Qdrant, la preparación de modelos y la integración con el LLM se
-añadirán en hitos posteriores.
+En esta etapa el servicio OCR puede procesar PDF, pero aún no están implementados
+los endpoints de extracción y RAG; la conexión con Qdrant, la preparación de
+modelos y la integración con el LLM se añadirán en hitos posteriores.
+
+The OCR component returns words with page-relative character offsets and boxes
+in PDF points, relative to the top-left of the **unrotated crop box**. It handles
+PDF rotation metadata, not arbitrary image skew or upside-down scans without
+rotation metadata. `OCR_DPI`, `OCR_LANGUAGES`, `OCR_TIMEOUT_SECONDS`,
+`MAX_UPLOAD_BYTES` and `MAX_PDF_PAGES` can be set in `.env`. The image currently
+includes only English Tesseract language data; other configured languages require
+their corresponding packages to be installed.
+
+El componente OCR devuelve palabras con offsets respecto al texto de su página y
+cuadros en puntos PDF, relativos a la esquina superior izquierda del **área de
+recorte sin rotar**. Corrige la rotación indicada en los metadatos del PDF, no la
+inclinación arbitraria ni escaneos invertidos sin metadatos de rotación. Se pueden
+ajustar `OCR_DPI`, `OCR_LANGUAGES`, `OCR_TIMEOUT_SECONDS`, `MAX_UPLOAD_BYTES` y
+`MAX_PDF_PAGES` en `.env`. La imagen solo incluye los datos de idioma inglés de
+Tesseract; otros idiomas requieren instalar sus paquetes correspondientes.
+
+For asynchronous callers, `get_ocr_service().extract_async(pdf_bytes)` and
+`extract_file_async(path)` run blocking PDF/OCR work in worker processes. Reuse
+the service so calls share its configurable `OCR_MAX_CONCURRENT_JOBS` limit
+(default: 2 per application process). Each HTTP worker has its own limit. A
+started job is allowed to finish if its waiting task is cancelled through an
+AnyIO cancellation scope; this is not a durable job queue.
+
+Para consumidores asíncronos, `get_ocr_service().extract_async(pdf_bytes)` y
+`extract_file_async(path)` ejecutan el trabajo bloqueante de PDF/OCR en procesos.
+Se debe reutilizar el servicio para compartir el límite configurable
+`OCR_MAX_CONCURRENT_JOBS` (por defecto: 2 por proceso de aplicación). Cada worker
+HTTP tiene su propio límite. Si la tarea que espera se cancela mediante un
+ámbito de cancelación de AnyIO, se permite que el trabajo iniciado termine;
+esto no es una cola de trabajos persistente.
+
+The async OCR interface is not yet exposed by an HTTP extraction endpoint. / La
+interfaz OCR asíncrona aún no está conectada a un endpoint HTTP de extracción.
 
 Test commands, observed results and incident resolutions are recorded in
 [`docs/TEST_LOG.md`](docs/TEST_LOG.md); engineering decisions are in
-[`DECISIONS.md`](DECISIONS.md).
+[`DECISIONS.md`](DECISIONS.md). Open OCR review findings and proposed fixes are
+tracked in [`docs/OCR_REVIEW_PLAN.md`](docs/OCR_REVIEW_PLAN.md).
 
 Los comandos de prueba, resultados observados y resoluciones de incidencias se
 registran en [`docs/TEST_LOG.md`](docs/TEST_LOG.md); las decisiones de ingeniería
-están en [`DECISIONS.md`](DECISIONS.md).
+están en [`DECISIONS.md`](DECISIONS.md). Los hallazgos abiertos del OCR y las
+correcciones propuestas se siguen en [`docs/OCR_REVIEW_PLAN.md`](docs/OCR_REVIEW_PLAN.md).
