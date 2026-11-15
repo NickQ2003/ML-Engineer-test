@@ -6,6 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
+    UV_NO_CACHE=1 \
     PATH="/app/.venv/bin:$PATH"
 
 WORKDIR /app
@@ -19,8 +20,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project
 
 COPY app ./app
-RUN useradd --create-home --uid 10001 appuser \
-    && chown -R appuser:appuser /app
+RUN useradd --create-home --uid 10001 appuser
 USER appuser
 
 EXPOSE 8000
