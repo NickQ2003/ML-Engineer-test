@@ -2,10 +2,12 @@
 
 **Fecha:** 2026-11-15
 
-**Estado:** propuestas de corrección; los hallazgos siguen abiertos.
+**Estado:** correcciones implementadas a nivel de servicio; integración HTTP y
+límites globales pendientes.
 
 **Alcance:** servicio OCR y su ejecución asíncrona, antes de integrarlos en
-`/api/extract`. Este plan no implica que las correcciones ya estén implementadas.
+`/api/extract`. Los puntos siguientes conservan la evidencia y decisiones de la
+revisión; el estado de implementación se resume en la tabla.
 
 ## Objetivo
 
@@ -18,15 +20,41 @@ validar; cualquier cambio de diseño debe registrarse en `DECISIONS.md`.
 
 | Orden | ID | Prioridad | Hallazgo | Estado |
 |---|---|---|---|---|
-| 1 | R-01 | Alta | Un PDF pequeño puede producir una imagen enorme | Abierto |
-| 2 | R-02 | Alta | La cancelación directa puede dejar Tesseract y archivos temporales | Abierto |
-| 3 | R-03 | Alta | La rotación de metadatos puede corregir una imagen ya girada | Abierto |
-| 4 | R-04 | Media | El límite de procesos no limita la cola ni las copias de PDF | Abierto |
-| 5 | R-05 | Media | El proveedor con caché puede crear varias instancias al inicio concurrente | Abierto |
-| 6 | R-06 | Baja | `LOG_LEVEL` se configura pero no se aplica | Abierto |
+| 1 | R-01 | Alta | Un PDF pequeño puede producir una imagen enorme | Corregido en servicio; umbral por calibrar |
+| 2 | R-02 | Alta | La cancelación directa puede dejar Tesseract y archivos temporales | Corregido en cierre/timeout controlados en POSIX |
+| 3 | R-03 | Alta | La rotación de metadatos puede corregir una imagen ya girada | Mitigado mediante heurística; precisión no garantizada |
+| 4 | R-04 | Media | El límite de procesos no limita la cola ni las copias de PDF | Parcial: servicio acotado; falta admisión HTTP y límite global |
+| 5 | R-05 | Media | El proveedor con caché puede crear varias instancias al inicio concurrente | Corregido en ciclo de vida; falta usarlo en el endpoint real |
+| 6 | R-06 | Baja | `LOG_LEVEL` se configura pero no se aplica | Corregido y probado |
 
-Los tres primeros deben resolverse antes de conectar OCR a un endpoint público.
-R-04 y R-05 deben resolverse como parte de esa integración, no solo documentarse.
+La admisión antes de procesar multipart y el uso de la dependencia compartida
+deben verificarse al implementar el endpoint real. Los límites siguen siendo por
+proceso y no hay garantía de limpieza ante una caída abrupta de toda la máquina.
+
+## Implementación posterior a la revisión
+
+- **R-01:** `MAX_PAGE_PIXELS=20000000` por defecto; se estima el área antes de
+  renderizar y se rechazan páginas excesivas con `PDFPageTooLargeError`. El
+  umbral aún debe calibrarse con las restricciones de memoria del despliegue.
+- **R-02:** subprocessos POSIX supervisados en grupos separados y directorios
+  temporales privados. Una solicitud cancelada no abandona un trabajo ya iniciado;
+  el timeout total o el cierre controlado terminan el grupo. Pruebas con un
+  subprocesso simulado que ignora `SIGTERM` verifican que no quede activo ni
+  queden temporales. Una caída abrupta o un `SIGKILL` del contenedor no ofrece
+  garantías de limpieza; falta verificar el comportamiento en el endpoint real.
+- **R-03:** OCR en orientación visible y segunda pasada si la confianza media
+  es inferior al umbral configurable; se elige la mayor confianza. Se prueban
+  OCR real y cuadros con escaneos en ambas orientaciones, con recorte y cuatro
+  rotaciones. La confianza es una heurística, no una garantía de precisión.
+- **R-04:** límites por proceso de trabajos activos y en cola, espera máxima,
+  timeout de lectura y `extract_stream_async()` que adquiere admisión antes de
+  leer. Un llamador que entregue `bytes` ya los habrá acumulado; el futuro HTTP
+  debe controlar la carga antes del parseo multipart y manejar saturación.
+- **R-05:** el servicio se crea en el ciclo de vida FastAPI y se obtiene por
+  `app.api.dependencies.get_ocr_service`. Se prueba con solicitudes concurrentes
+  sobre una ruta de prueba; `/api/extract` todavía no existe.
+- **R-06:** se valida y aplica `LOG_LEVEL` a los loggers de aplicación y Uvicorn;
+  los logs propios de aplicación se emiten como JSON. Se prueba el nivel y la salida.
 
 ## R-01 — Límite de píxeles renderizados
 

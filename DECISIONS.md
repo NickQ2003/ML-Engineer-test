@@ -19,43 +19,52 @@
 
 ## OCR coordinates and resource limits
 
-- **Decision:** OCR every page once per structured extraction and retain each
+- **Decision:** OCR every page per structured extraction and retain each
   word's box, page-local text offsets and line identifiers. Boxes use PDF points
-  relative to the top-left of the unrotated crop box. PDF rotation metadata is
-  undone before Tesseract and incorporated in the coordinate transformation.
+  relative to the top-left of the unrotated crop box. OCR starts with the
+  visible orientation and tries an alternative when confidence is low; the
+  selected orientation is incorporated in the coordinate transformation.
 - **Why:** page-local offsets preserve the relationship between recognized text
   and words for later NER, while crop-relative coordinates provide a consistent
   convention for rotated and cropped pages.
-- **Trade-offs:** PDF rotation metadata does not correct arbitrary scan skew or
-  upside-down images without metadata. The default image includes only English
-  language data. Byte size, page count, DPI and Tesseract timeout are bounded and
-  configurable; a separate rendered-pixel limit and upload/HTTP validation remain
-  to be implemented. The public extraction endpoint is not implemented yet.
-- **Review status:** the current unconditional derotation fails when PDF
-  rotation metadata corrects a physically rotated scan. A correction is planned
-  in [the OCR review plan](docs/OCR_REVIEW_PLAN.md#r-03--orientación-de-pdf-y-escaneo).
+- **Trade-offs:** confidence-based orientation is heuristic and may select the
+  wrong result; arbitrary skew is not corrected. The default image includes only
+  English language data. Byte size, page count, rendered pixels, DPI and timeouts
+  are bounded and configurable. Upload/HTTP validation remains to be implemented.
+  See [the OCR review plan](docs/OCR_REVIEW_PLAN.md) for remaining limitations.
 
 ## Asynchronous OCR without changing the API contract
 
 - **Decision:** expose asynchronous OCR methods that dispatch blocking PDF and
-  Tesseract work to AnyIO worker processes. A reusable service shares a
-  configurable capacity limiter; the default is two jobs per application process.
+  Tesseract work to supervised POSIX subprocesses in private job directories.
+  A service created in the FastAPI lifespan shares admission and concurrency
+  limits; the default is two running and two queued jobs per application process.
   The synchronous methods remain available for non-async callers.
 - **Why:** simply making a function `async` would not make PyMuPDF and Tesseract
   non-blocking. Process isolation also avoids parallel PyMuPDF work in threads.
-- **Trade-offs:** each application worker has its own concurrency limit; queued
-  callers and already-uploaded data are not globally bounded. A started task is
-  shielded from AnyIO scope cancellation so the OCR worker can finish and clean
-  up, which can consume resources after cancellation. There is no durable queue or
-  job-status API. The future endpoint must reuse `get_ocr_service()` and await
-  the result without changing the fixed response contract.
-- **Review status:** direct `asyncio.Task.cancel()` can terminate the worker
-  while leaving a Tesseract subprocess and temporary files. See
-  [the OCR review plan](docs/OCR_REVIEW_PLAN.md#r-02--cancelación-y-limpieza-de-procesos).
+- **Trade-offs:** limits are per application worker, not global. Admission before
+  multipart parsing remains a future endpoint concern. A cancelled caller does
+  not immediately stop a started job; the service supervises it through a total
+  deadline and uses process-group cleanup on shutdown or timeout. No durable
+  queue exists, and abrupt machine/container termination can defeat cleanup.
+  The future endpoint must use the lifespan-managed dependency and preserve the
+  fixed response contract. See [the review plan](docs/OCR_REVIEW_PLAN.md).
+
+## Resource admission and logging
+
+- **Decision:** reject pages above a configurable 20-million-pixel default
+  before rendering. Bound active and queued OCR jobs, queue wait, stream read,
+  total document processing and shutdown time per application process. Apply
+  `LOG_LEVEL` to application and Uvicorn loggers; application records use JSON.
+- **Trade-offs:** the pixel limit needs calibration against actual memory and
+  document sizes. Limits are not shared between server processes or replicas.
+  The future HTTP endpoint must enforce admission before buffering multipart
+  bodies and translate saturation and timeout errors to HTTP responses. Logs
+  contain job status and page counts, not document content or credentials.
 
 ## Use of AI tools
 
-OpenCode was used to help plan and implement the initial infrastructure, translate
-the README, investigate the CUDA image size, and document and run checks. The
-project author remains responsible for reviewing, understanding, and validating
-the resulting code and decisions.
+OpenCode was used to help plan and implement infrastructure and OCR, translate
+the README, investigate CUDA image size and review findings, and document and
+run checks. The project author remains responsible for reviewing, understanding,
+and validating the resulting code and decisions.

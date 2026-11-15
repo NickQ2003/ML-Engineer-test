@@ -647,6 +647,80 @@ sequential subsequent calls share instance: True
 **Resultado:** R-04 y R-05 siguen abiertos; los detalles y las decisiones
 propuestas están en el plan.
 
+## 2026-11-15 — Correcciones de la revisión OCR
+
+**Estado:** correcciones implementadas a nivel de servicio. La admisión antes de
+parsear multipart, los límites globales y el endpoint real siguen pendientes.
+Las decisiones y limitaciones se detallan en `docs/OCR_REVIEW_PLAN.md`.
+
+- R-01: estimación conservadora de píxeles antes del renderizado y rechazo de
+  páginas excesivas, con umbral configurable; falta calibrarlo en despliegue.
+- R-02: trabajo supervisado en subprocessos POSIX, directorio temporal privado,
+  límite total y limpieza de grupo de procesos en timeout o cierre controlado.
+- R-03: orientación visible primero y segunda pasada ante baja confianza;
+  pruebas reales con rotación física, metadatos, recortes y cuadros.
+- R-04: límite local de trabajos y cola, timeout de cola y lectura de stream
+  con admisión previa; falta controlar el cuerpo multipart en el endpoint real.
+- R-05: servicio creado en el ciclo de vida FastAPI, probado con solicitudes
+  concurrentes a una ruta de prueba que utiliza la dependencia compartida.
+- R-06: nivel validado y aplicado; registros de aplicación en JSON.
+
+### Incidencia durante la corrección de logs
+
+Tras aplicar inicialmente el nivel sin instalar un manejador para la aplicación,
+este comando terminó sin imprimir el mensaje de depuración:
+
+```bash
+docker compose exec -T app python -c "import logging; from app.core.logging import configure_logging; configure_logging('DEBUG'); logging.getLogger('app.review').debug('DEBUG_SHOULD_BE_VISIBLE')"
+```
+
+**Diagnóstico:** el nivel estaba aplicado, pero la aplicación no tenía un
+manejador que emitiera sus registros. **Solución:** instalar un manejador JSON
+para `app` y mantener los niveles de Uvicorn configurables. Tras reconstruir la
+imagen se ejecutó:
+
+```bash
+docker compose exec -T app python -c "import logging; from app.core.logging import configure_logging; configure_logging('DEBUG'); logging.getLogger('app.check').debug('logging-ok')"
+```
+
+**Salida relevante observada:**
+
+```json
+{"timestamp":"2026-11-15T06:27:18.597653+00:00","level":"DEBUG","logger":"app.check","message":"logging-ok"}
+```
+
+### Batería final en la imagen reconstruida
+
+```bash
+docker compose up --build -d
+docker run --rm \
+  -v "$PWD/tests:/tests:ro" \
+  -v "$PWD/sample_pdfs:/samples:ro" \
+  -e SAMPLE_PDFS_DIR=/samples \
+  --entrypoint /bin/sh ml-engineer-test-app:latest \
+  -c 'uv pip install --target /tmp/test-deps "pytest==9.2.0" && PYTHONPATH=/tmp/test-deps:/app python -m pytest -p no:cacheprovider /tests/unit /tests/integration'
+```
+
+**Salida relevante observada:**
+
+```text
+collected 67 items
+tests/unit/test_lifecycle_and_logging.py ...
+tests/unit/test_ocr_async.py ..............
+tests/unit/test_ocr_service.py .....................
+tests/integration/test_async_http.py .
+tests/integration/test_ocr_real.py .......................
+tests/integration/test_worker_cleanup.py ..
+67 passed in 19.18s
+```
+
+Las pruebas de limpieza usan un subprocesso simulado que ignora `SIGTERM` y
+verifican la parada y ausencia de temporales después de cancelación con cierre
+controlado y de timeout. No demuestran limpieza ante caída abrupta de la máquina
+o `SIGKILL` del contenedor. La prueba HTTP usa una ruta simulada, no `/api/extract`.
+`docker compose ps` mostró ambos contenedores activos y `curl --fail --silent
+--show-error http://localhost:8000/health` devolvió `{"status":"ok"}`.
+
 ## Plantilla para próximas ejecuciones
 
 ````markdown

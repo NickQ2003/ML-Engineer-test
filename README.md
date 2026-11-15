@@ -433,38 +433,46 @@ los endpoints de extracción y RAG; la conexión con Qdrant, la preparación de
 modelos y la integración con el LLM se añadirán en hitos posteriores.
 
 The OCR component returns words with page-relative character offsets and boxes
-in PDF points, relative to the top-left of the **unrotated crop box**. It handles
-PDF rotation metadata, not arbitrary image skew or upside-down scans without
-rotation metadata. `OCR_DPI`, `OCR_LANGUAGES`, `OCR_TIMEOUT_SECONDS`,
-`MAX_UPLOAD_BYTES` and `MAX_PDF_PAGES` can be set in `.env`. The image currently
-includes only English Tesseract language data; other configured languages require
-their corresponding packages to be installed.
+in PDF points, relative to the top-left of the **unrotated crop box**. It first
+uses the visible orientation and tries an alternative when confidence is low;
+this heuristic is not guaranteed to choose correctly and does not handle
+arbitrary skew. Byte, page and rendered-pixel limits, DPI, language and timeouts
+are configurable in `.env.example`. The image includes only English Tesseract
+language data; other languages require their corresponding packages.
 
 El componente OCR devuelve palabras con offsets respecto al texto de su página y
 cuadros en puntos PDF, relativos a la esquina superior izquierda del **área de
-recorte sin rotar**. Corrige la rotación indicada en los metadatos del PDF, no la
-inclinación arbitraria ni escaneos invertidos sin metadatos de rotación. Se pueden
-ajustar `OCR_DPI`, `OCR_LANGUAGES`, `OCR_TIMEOUT_SECONDS`, `MAX_UPLOAD_BYTES` y
-`MAX_PDF_PAGES` en `.env`. La imagen solo incluye los datos de idioma inglés de
-Tesseract; otros idiomas requieren instalar sus paquetes correspondientes.
+recorte sin rotar**. Primero usa la orientación visible y prueba una alternativa
+si la confianza es baja; esta heurística no garantiza la elección correcta ni
+corrige inclinaciones arbitrarias. Los límites de bytes, páginas y píxeles, DPI,
+idioma y tiempos se configuran en `.env.example`. La imagen solo incluye los
+datos de idioma inglés de Tesseract; otros idiomas necesitan sus paquetes.
 
-For asynchronous callers, `get_ocr_service().extract_async(pdf_bytes)` and
-`extract_file_async(path)` run blocking PDF/OCR work in worker processes. Reuse
-the service so calls share its configurable `OCR_MAX_CONCURRENT_JOBS` limit
-(default: 2 per application process). Each HTTP worker has its own limit. A
-started job is allowed to finish if its waiting task is cancelled through an
-AnyIO cancellation scope; this is not a durable job queue.
+For asynchronous callers, `OCRService.extract_async(pdf_bytes)`,
+`extract_file_async(path)` and `extract_stream_async(stream)` use supervised
+POSIX worker processes. FastAPI creates one shared service during startup; the
+dependency `app.api.dependencies.get_ocr_service` retrieves it. Concurrent jobs,
+queued jobs, queue wait, upload, document and shutdown timeouts are configurable
+per application process. A started job remains supervised after caller
+cancellation; shutdown terminates its process group after the configured grace
+period. This is not a durable queue and cannot guarantee cleanup after a machine
+or container is killed abruptly.
 
-Para consumidores asíncronos, `get_ocr_service().extract_async(pdf_bytes)` y
-`extract_file_async(path)` ejecutan el trabajo bloqueante de PDF/OCR en procesos.
-Se debe reutilizar el servicio para compartir el límite configurable
-`OCR_MAX_CONCURRENT_JOBS` (por defecto: 2 por proceso de aplicación). Cada worker
-HTTP tiene su propio límite. Si la tarea que espera se cancela mediante un
-ámbito de cancelación de AnyIO, se permite que el trabajo iniciado termine;
-esto no es una cola de trabajos persistente.
+Para consumidores asíncronos, `OCRService.extract_async(pdf_bytes)`,
+`extract_file_async(path)` y `extract_stream_async(stream)` usan procesos POSIX
+supervisados. FastAPI crea un servicio compartido al iniciar; la dependencia
+`app.api.dependencies.get_ocr_service` lo obtiene. Los trabajos simultáneos,
+en espera y tiempos de cola, carga, documento y cierre son configurables por
+proceso de aplicación. Un trabajo iniciado permanece supervisado si se cancela
+quien lo espera; al cerrar, se termina su grupo de procesos tras el plazo de
+espera. No es una cola persistente ni garantiza limpieza ante la caída abrupta
+de la máquina o del contenedor.
 
 The async OCR interface is not yet exposed by an HTTP extraction endpoint. / La
 interfaz OCR asíncrona aún no está conectada a un endpoint HTTP de extracción.
+Admission before multipart parsing and global limits across HTTP workers remain
+to be implemented. / La admisión antes de procesar multipart y los límites
+globales entre workers HTTP siguen pendientes.
 
 Test commands, observed results and incident resolutions are recorded in
 [`docs/TEST_LOG.md`](docs/TEST_LOG.md); engineering decisions are in
