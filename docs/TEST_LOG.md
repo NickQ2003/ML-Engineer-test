@@ -721,6 +721,43 @@ o `SIGKILL` del contenedor. La prueba HTTP usa una ruta simulada, no `/api/extra
 `docker compose ps` mostró ambos contenedores activos y `curl --fail --silent
 --show-error http://localhost:8000/health` devolvió `{"status":"ok"}`.
 
+## 2026-11-15 — Revisión visual preliminar de cuadros OCR
+
+Se procesó `sample_pdfs/meeting_minutes.pdf` con `OCRService` y se dibujó cada
+cuadro de palabra sobre una copia del PDF. Se usó un directorio temporal como
+destino inicial y después se copió el archivo, sin sobrescribir, a
+`docs_dev/meeting_minutes_ocr_visual.pdf`, que permanece fuera de Git.
+
+```bash
+docker run --rm -i --user "$(id -u):$(id -g)" \
+  -v "$PWD/sample_pdfs:/samples:ro" \
+  -v "<directorio-temporal>:/output" \
+  --entrypoint python ml-engineer-test-app:latest - <<'PY'
+from pathlib import Path
+import pymupdf
+from app.services.ocr_service import OCRService
+
+source = Path('/samples/meeting_minutes.pdf')
+destination = Path('/output/meeting_minutes_ocr_visual.pdf')
+if destination.exists():
+    raise SystemExit(f'El archivo ya existe; no se sobrescribió: {destination}')
+result = OCRService().extract_file(source)
+with pymupdf.open(source) as document:
+    for page_result in result.pages:
+        page = document[page_result.page_number]
+        for word in page_result.words:
+            box = word.box
+            page.draw_rect(pymupdf.Rect(box.x, box.y, box.x + box.width, box.y + box.height), color=(1, 0, 0), width=0.7, overlay=True)
+    document.save(destination, deflate=True)
+print(f'PDF generado: {destination}')
+print(f'Páginas: {len(result.pages)}; palabras por página: {[len(page.words) for page in result.pages]}')
+PY
+```
+
+**Salida observada:** `Páginas: 2; palabras por página: [149, 134]`. El usuario
+revisó y aprobó visualmente los cuadros para este PDF. Sus observaciones y las
+limitaciones de esa revisión están en [MANUAL_TEST_LOG.md](MANUAL_TEST_LOG.md).
+
 ## Plantilla para próximas ejecuciones
 
 ````markdown

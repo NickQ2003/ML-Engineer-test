@@ -475,11 +475,13 @@ to be implemented. / La admisión antes de procesar multipart y los límites
 globales entre workers HTTP siguen pendientes.
 
 Test commands, observed results and incident resolutions are recorded in
-[`docs/TEST_LOG.md`](docs/TEST_LOG.md); engineering decisions are in
+[`docs/TEST_LOG.md`](docs/TEST_LOG.md); human review results are recorded in
+[`docs/MANUAL_TEST_LOG.md`](docs/MANUAL_TEST_LOG.md); engineering decisions are in
 [`DECISIONS.md`](DECISIONS.md). Open OCR review findings and proposed fixes are
 tracked in [`docs/OCR_REVIEW_PLAN.md`](docs/OCR_REVIEW_PLAN.md).
 
 Los comandos de prueba, resultados observados y resoluciones de incidencias se
-registran en [`docs/TEST_LOG.md`](docs/TEST_LOG.md); las decisiones de ingeniería
+registran en [`docs/TEST_LOG.md`](docs/TEST_LOG.md); las revisiones humanas, en
+[`docs/MANUAL_TEST_LOG.md`](docs/MANUAL_TEST_LOG.md); las decisiones de ingeniería
 están en [`DECISIONS.md`](DECISIONS.md). Los hallazgos abiertos del OCR y las
 correcciones propuestas se siguen en [`docs/OCR_REVIEW_PLAN.md`](docs/OCR_REVIEW_PLAN.md).
