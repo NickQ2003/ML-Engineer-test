@@ -388,3 +388,39 @@ y se espera que los uses**: así funciona la ingeniería moderna. Hay dos condic
 
 Evaluamos *tu* criterio de ingeniería, no el resultado de un agente. Entregar algo
 que no comprendes es lo único que hace que no superes esta prueba.
+
+---
+
+## Docker development / Desarrollo con Docker
+
+The initial infrastructure runs FastAPI and Qdrant as separate containers. Docker
+Engine and Docker Compose are required. Qdrant data persists in the `qdrant_data`
+volume; it is not exposed directly to the host. The first build downloads the
+Python dependencies and requires network access.
+
+La infraestructura inicial ejecuta FastAPI y Qdrant en contenedores separados.
+Se necesitan Docker Engine y Docker Compose. Los datos de Qdrant persisten en el
+volumen `qdrant_data`, sin exponer el servicio directamente al host. La primera
+construcción descarga las dependencias de Python y necesita acceso a la red.
+
+```bash
+# Optional / Opcional: customize defaults before starting / personalizar antes de iniciar
+cp .env.example .env
+docker compose up --build
+```
+
+In another terminal / En otra terminal:
+
+```bash
+curl http://localhost:8000/health
+# {"status":"ok"}
+```
+
+`GET /health` is a liveness check for the API, not a Qdrant readiness check.
+At this stage, extraction and RAG endpoints are not implemented; the Qdrant
+connection, model setup and LLM integration will be added in later milestones.
+
+`GET /health` comprueba que la API está viva, no que Qdrant esté preparado.
+En esta etapa aún no están implementados los endpoints de extracción y RAG; la
+conexión con Qdrant, la preparación de modelos y la integración con el LLM se
+añadirán en hitos posteriores.
