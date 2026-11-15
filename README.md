@@ -178,3 +178,213 @@ expected** — that's how modern engineering works. Two conditions:
 
 We are evaluating *your* engineering judgment, not an agent's output. Submitting
 something you don't understand is the one thing that fails this test.
+
+---
+
+# Prueba técnica para ML Engineer — Servicio de inteligencia documental
+
+Construye desde cero un pequeño servicio con calidad de producción que extraiga
+nombres de personas (con su ubicación) de archivos PDF escaneados, los compare
+mediante coincidencia aproximada con una lista proporcionada y responda preguntas
+sobre los documentos incorporados utilizando RAG (generación aumentada por
+recuperación).
+
+Este repositorio es una **estructura vacía**. No hay código funcional que
+corregir: debes implementar todo. Nos importa tanto *cómo* lo construyes (diseño,
+pruebas, prácticas de ingeniería y decisiones) como que funcione.
+
+## Por qué existe esta prueba (el problema)
+
+Imaginemos una empresa que procesa grandes volúmenes de documentos escaneados
+(contratos, formularios KYC y documentos presentados ante organismos oficiales)
+que mencionan personas. Por motivos de **cumplimiento normativo**, no basta con
+saber *que* aparece un nombre: una persona revisora debe poder **encontrarlo en
+la página** y **verificar ese nombre específico frente a otros registros** (un
+documento de identidad, una lista de sanciones o un sistema interno). Un nombre
+sin ubicación no se puede auditar.
+
+Por tanto, el requisito principal es: **dado un PDF, devolver el nombre de cada
+persona junto con su ubicación exacta en la página** (número de página y cuadro
+delimitador). Esa ubicación permite que una persona o un sistema posterior
+verifique la coincidencia con otra información. La coincidencia aproximada y RAG
+se basan en el mismo contenido extraído. Ten presente este propósito de «localizar
+para verificar»: por eso la precisión de los cuadros delimitadores y la
+identificación correcta de las páginas son más importantes de lo que podría
+parecer inicialmente.
+
+---
+
+## Qué vas a construir
+
+Un servicio FastAPI que exponga cuatro endpoints. El **contrato** de
+solicitud/respuesta está **fijado** por `app/models/schemas.py`: no cambies esas
+estructuras (añade campos solo si tienes un motivo y lo documentas).
+
+### 1. `GET /health`
+
+Comprobación de disponibilidad. Devuelve `{"status": "ok"}` (y cualquier otra
+información útil).
+
+### 2. `POST /api/extract` — nombres + cuadros delimitadores + coincidencia aproximada
+
+`multipart/form-data`:
+- `pdf_file`: un PDF escaneado.
+- `names`: una cadena JSON con una lista de `{"first_name": ..., "last_name": ...}`.
+
+Flujo de procesamiento:
+1. Aplicar **OCR** al PDF (está escaneado: no tiene una capa de texto seleccionable).
+2. **NER**: extraer únicamente nombres de **personas** (no organizaciones, lugares ni fechas).
+3. **Cuadros delimitadores**: localizar cada nombre extraído en la página y
+   devolver su cuadro en el **sistema de coordenadas del PDF** (puntos, 72 por
+   pulgada; *no* píxeles de la imagen), con un **número de página que empieza en 0**.
+4. Comparar los nombres extraídos con los `names` proporcionados mediante
+   **coincidencia aproximada**.
+
+Respuesta: `ExtractionResponse` (consulta `schemas.py`), con `extracted_names[]`
+y su `bounding_box`, y `fuzzy_matches[]`.
+
+### 3. `POST /api/ingest` — indexar un documento para RAG
+
+`multipart/form-data` con `pdf_file`. OCR → división en fragmentos → generación
+de embeddings → almacenamiento en una base de datos vectorial. Respuesta:
+`IngestResponse` (`status`, `chunks_stored`).
+
+### 4. `POST /api/ask` — responder una pregunta con RAG
+
+JSON `{"question": "..."}`. Generar el embedding de la pregunta, recuperar los
+fragmentos más relevantes, llamar a un LLM para responder **basándose en el
+contexto recuperado** y devolver `RAGResponse` (`answer`, `sources`).
+
+---
+
+## Requisitos importantes (esta es la evaluación real)
+
+> **Alcance y tiempo.** Esta prueba tiene un tiempo limitado: **no** esperamos
+> infraestructura completamente aislada. Una **base de datos vectorial
+> integrada / en el mismo proceso (por ejemplo, Chroma) que se ejecute localmente
+> es totalmente aceptable**, y no necesitas Docker para aprobar. Elementos como
+> un `docker-compose.yml` con una base de datos vectorial aislada, un contenedor
+> reforzado o una separación clara de servicios **no son obligatorios**; sin
+> embargo, si los añades, cuentan como **extras positivos** en la evaluación.
+> Prioriza un núcleo correcto y bien estructurado; mejora la infraestructura
+> solo si tienes tiempo.
+
+Cualquiera puede conectar bibliotecas. Estamos contratando a un **ML Engineer**,
+así que buscamos criterio para trabajar en producción:
+
+- **Arquitectura** — SOLID, inyección de dependencias y separación de
+  responsabilidades. Los servicios dependen de abstracciones (Protocols/ABC),
+  no de singletons concretos. Los routers HTTP se mantienen simples; la lógica
+  de negocio se puede probar sin HTTP.
+- **Configuración** — no codifiques directamente hosts, puertos, nombres de
+  modelos, umbrales ni DPI. La configuración debe estar centralizada y permitir
+  sobrescribir valores mediante variables de entorno.
+- **Resiliencia** — tiempos de espera y reintentos en llamadas externas (LLM,
+  base de datos vectorial); fallos informativos; nada de `except: pass` silenciosos.
+- **Validación** — rechaza archivos que no sean PDF (según su contenido, no solo
+  su extensión), archivos vacíos y cargas demasiado grandes; valida los cuerpos
+  de las solicitudes.
+- **Gestión de recursos** — no dejes manejadores de archivos abiertos ni
+  archivos temporales sin eliminar.
+- **Observabilidad** — registros estructurados con contexto útil.
+- **Detalles de corrección que comprobaremos**, por ejemplo:
+  - El OCR debe procesar **todas** las páginas (incluida la primera).
+  - Los cuadros delimitadores deben estar en el **sistema de coordenadas del PDF**,
+    no en píxeles de la imagen.
+  - La comparación de nombres debe **ignorar mayúsculas y minúsculas** y ser
+    robusta frente a errores de OCR y acentos (`María González` ~ `Maria Gonzalez`);
+    prefiere la similitud de la cadena completa a los trucos con subcadenas.
+  - La división en fragmentos para RAG no debe cortar palabras por la mitad; la
+    recuperación debe basarse en contenido real (sin `sources` inventadas).
+  - Los identificadores de la base de datos vectorial deben ser únicos entre
+    documentos (una segunda incorporación no debe sobrescribir la primera).
+- **Pruebas** — debes escribirlas. Cubre la lógica compleja anterior con pruebas
+  unitarias (simula los modelos pesados y los servicios externos) y al menos un
+  flujo de extremo a extremo. Evaluamos *qué* decidiste probar y cómo.
+- **Contenedorización (extra, no obligatoria)** — si tienes tiempo, un
+  `Dockerfile` y un `docker-compose.yml` que inicien la aplicación **y sus
+  dependencias** con `docker compose up` (y con `GET /health` funcionando) son
+  un punto muy positivo. Omitirlos no penaliza la evaluación principal; una
+  configuración local o integrada es suficiente.
+- **Visor de auditoría (extra, no obligatorio)** — una interfaz sencilla que,
+  dado un PDF, **muestre las páginas y dibuje los cuadros delimitadores devueltos
+  sobre los nombres detectados**. Esta es la herramienta de quien revisa el
+  cumplimiento: permite que una persona confirme que un nombre realmente está
+  donde la API indica. No hace falta nada sofisticado: basta con una página
+  autocontenida (por ejemplo, JavaScript puro + pdf.js) que llame a
+  `/api/extract` y superponga los cuadros. Es un punto muy positivo si se incluye.
+- **DESIGN.md** (≤ 3 páginas) — vistas de componentes y de secuencia, elecciones
+  tecnológicas y sus ventajas y desventajas, cómo escalarías a más de 1000 PDF por
+  hora, modos de fallo y mitigaciones y, si tuvieras que elegir entre modelos
+  según la complejidad de la consulta, cómo lo harías.
+
+---
+
+## Tecnologías sugeridas (puedes sustituirlas, pero justifícalo en DESIGN.md)
+
+- Python 3.12, FastAPI, `pytest`
+- OCR: Tesseract mediante `pytesseract` + `PyMuPDF` (PDF → imagen)
+- NER: spaCy (`en_core_web_sm`); contempla otros idiomas si los añades
+- Coincidencia aproximada: `thefuzz`
+- Embeddings: `sentence-transformers`
+- Base de datos vectorial: **Chroma** (integrada/local, la opción más sencilla)
+  o Qdrant si prefieres un servicio separado
+- LLM: cualquier endpoint compatible con OpenAI (URL base y clave configurables)
+
+Las dependencias están en `pyproject.toml` y se gestionan con
+**[uv](https://docs.astral.sh/uv/)**; modifícalas como consideres conveniente
+(`uv add ...`). Incluye en el commit el `uv.lock` resultante.
+
+---
+
+## Entregables
+
+1. Una **rama y un pull request** a este repositorio con tu implementación.
+2. `DESIGN.md`.
+3. Un **`DECISIONS.md`** breve: decisiones de ingeniería relevantes y sus
+   ventajas y desventajas (una lista con viñetas es suficiente). Aquí se valora
+   tu razonamiento.
+4. Pruebas (obligatorias). `Dockerfile` / `docker-compose.yml` son **extras opcionales**.
+
+## Cómo evaluamos (ponderaciones)
+
+| Criterio | Ponderación |
+|---|---|
+| Corrección: el flujo funciona con los PDF de ejemplo | 30 % |
+| Arquitectura y diseño (SOLID, inyección de dependencias, abstracciones, routers simples) | 20 % |
+| Prácticas de ingeniería (configuración, registros, resiliencia, validación) | 20 % |
+| Calidad del código y decisiones | 15 % |
+| Pruebas que escribiste (cobertura de la lógica compleja) | 10 % |
+| Documento de diseño | 5 % |
+
+**Extras positivos (adicionales a lo anterior):** un **visor de auditoría** que
+superponga los cuadros delimitadores en el PDF, contenedorización (`Dockerfile` /
+`docker-compose.yml`), una base de datos vectorial realmente aislada, soporte
+para varios idiomas, procesamiento por lotes u otras mejoras para producción. No
+son obligatorios; se valoran cuando están presentes.
+
+## Primeros pasos
+
+```bash
+uv sync --extra dev                          # crear .venv e instalar dependencias de pyproject.toml
+uv run python -m spacy download en_core_web_sm
+# Base de datos vectorial: Chroma integrado no necesita nada adicional. Solo si eliges Qdrant:
+#   docker run -p 6333:6333 qdrant/qdrant
+uv run uvicorn app.main:app --reload
+```
+
+Los PDF escaneados de ejemplo están en `sample_pdfs/`.
+
+## Uso de herramientas de IA
+
+El uso de asistentes de IA (Copilot, Claude, ChatGPT, agentes) está **permitido
+y se espera que los uses**: así funciona la ingeniería moderna. Hay dos condiciones:
+
+1. **Decláralo** en `DECISIONS.md` (indica para qué los utilizaste).
+2. **Hazte responsable de cada línea.** En una conversación posterior te
+   pediremos que expliques las decisiones de diseño, recorras tu código y hagas
+   un cambio en directo. El código cuyo funcionamiento no puedas razonar no
+   contará a tu favor.
+
+Evaluamos *tu* criterio de ingeniería, no el resultado de un agente. Entregar algo
+que no comprendes es lo único que hace que no superes esta prueba.
