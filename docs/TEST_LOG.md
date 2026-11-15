@@ -758,6 +758,18 @@ PY
 revisó y aprobó visualmente los cuadros para este PDF. Sus observaciones y las
 limitaciones de esa revisión están en [MANUAL_TEST_LOG.md](MANUAL_TEST_LOG.md).
 
+## 2026-11-15 — Medición exploratoria de memoria OCR
+
+Se midió el pico de memoria del cgroup en contenedores temporales limitados a
+2 GiB, con uno o dos OCR simultáneos. Con dos trabajos sobre una página
+rasterizada sintética de aproximadamente 19,77 millones de píxeles se observó
+un pico de 985,3 MiB; una página superior al límite se rechazó correctamente.
+
+**Decisión:** mantener provisionalmente `MAX_PAGE_PIXELS=20000000`. Esta medición
+no incluye toda la aplicación ni prueba el peor caso, y no constituye calibración
+para producción. Entorno, comandos, resultados y limitaciones completos en
+[OCR_MEMORY_CALIBRATION.md](OCR_MEMORY_CALIBRATION.md).
+
 ## Plantilla para próximas ejecuciones
 
 ````markdown

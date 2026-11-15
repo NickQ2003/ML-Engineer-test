@@ -61,6 +61,10 @@
   The future HTTP endpoint must enforce admission before buffering multipart
   bodies and translate saturation and timeout errors to HTTP responses. Logs
   contain job status and page counts, not document content or credentials.
+- **Preliminary measurement:** two concurrent OCR jobs on a synthetic raster
+  page near the 20-million-pixel limit peaked at 985.3 MiB in an isolated
+  container capped at 2 GiB. This is not a production capacity guarantee; see
+  [the measurement and its limitations](docs/OCR_MEMORY_CALIBRATION.md).
 
 ## Use of AI tools
 

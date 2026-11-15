@@ -34,8 +34,9 @@ proceso y no hay garantía de limpieza ante una caída abrupta de toda la máqui
 ## Implementación posterior a la revisión
 
 - **R-01:** `MAX_PAGE_PIXELS=20000000` por defecto; se estima el área antes de
-  renderizar y se rechazan páginas excesivas con `PDFPageTooLargeError`. El
-  umbral aún debe calibrarse con las restricciones de memoria del despliegue.
+  renderizar y se rechazan páginas excesivas con `PDFPageTooLargeError`. Una
+  medición exploratoria respalda mantenerlo provisionalmente; aún debe calibrarse
+  para el despliegue real. Ver [mediciones](OCR_MEMORY_CALIBRATION.md).
 - **R-02:** subprocessos POSIX supervisados en grupos separados y directorios
   temporales privados. Una solicitud cancelada no abandona un trabajo ya iniciado;
   el timeout total o el cierre controlado terminan el grupo. Pruebas con un
