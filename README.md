@@ -5,9 +5,9 @@ names (with their locations) from scanned PDFs, fuzzy-matches them against a
 provided list, and answers questions about ingested documents using RAG
 (Retrieval-Augmented Generation).
 
-This repository is an **empty skeleton**. There is no working code to fix — you
-implement the whole thing. We care as much about *how* you build it (design,
-tests, engineering practices, decisions) as about whether it runs.
+This repository started as an empty skeleton. The implemented extraction flow
+and remaining RAG work are described below. We care as much about *how* it is
+built (design, tests, engineering practices, decisions) as whether it runs.
 
 ## Why this exists (the problem)
 
@@ -423,14 +423,12 @@ curl http://localhost:8000/health
 ```
 
 `GET /health` is a liveness check for the API, not a Qdrant readiness check.
-At this stage, the OCR service can process PDFs, but extraction and RAG endpoints
-are not implemented; the Qdrant connection, model setup and LLM integration will
-be added in later milestones.
+`POST /api/extract` is implemented; the ingestion and question-answering RAG
+endpoints and their Qdrant, embedding and LLM integrations remain pending.
 
 `GET /health` comprueba que la API está viva, no que Qdrant esté preparado.
-En esta etapa el servicio OCR puede procesar PDF, pero aún no están implementados
-los endpoints de extracción y RAG; la conexión con Qdrant, la preparación de
-modelos y la integración con el LLM se añadirán en hitos posteriores.
+`POST /api/extract` está implementado; los endpoints RAG de ingestión y preguntas
+y sus integraciones con Qdrant, embeddings y el LLM siguen pendientes.
 
 The OCR component returns words with page-relative character offsets and boxes
 in PDF points, relative to the top-left of the **unrotated crop box**. It first
@@ -468,50 +466,82 @@ quien lo espera; al cerrar, se termina su grupo de procesos tras el plazo de
 espera. No es una cola persistente ni garantiza limpieza ante la caída abrupta
 de la máquina o del contenedor.
 
-The extraction endpoint is still **not implemented**. Its building blocks include
-a `POST /api/extract` ASGI body guard, a `names` JSON validator and page-local
-PERSON detection. Neither the validator nor NER is wired to a real HTTP endpoint
-yet; `FUZZY_THRESHOLD` is configured but matching is not implemented.
+### Extraction API / API de extracción
 
-El endpoint de extracción **todavía no está implementado**. Sus primeras piezas
-ya existen: un límite ASGI para el cuerpo de `POST /api/extract`, un validador
-JSON de `names` y detección de personas por página. Ni el validador ni NER están
-conectados todavía a un endpoint real; `FUZZY_THRESHOLD` está configurado pero
-la coincidencia aproximada aún no está implementada.
+Send one PDF and a JSON array of name pairs as multipart form data. An empty list
+is valid. / Envía un PDF y una lista JSON de parejas de nombres como multipart;
+una lista vacía es válida.
+
+```bash
+curl --fail --silent --show-error http://localhost:8000/api/extract \
+  -F 'pdf_file=@sample_pdfs/meeting_minutes.pdf;type=application/pdf' \
+  -F 'names=[{"first_name":"Thomas","last_name":"Muller"}]'
+```
+
+The response follows `ExtractionResponse`: one `extracted_names` entry per
+located occurrence and distinct `fuzzy_matches` pairs. Pages start at zero;
+boxes use points relative to the top-left of the unrotated crop box. OCR is run
+once per request. NER spans are mapped to OCR words on the same page; unsafe or
+distant associations are omitted rather than assigned invented coordinates.
+For a name split over adjacent lines, one enclosing rectangle may include blank
+space. Full-name similarity ignores case and accents, removes apostrophes and
+treats other punctuation as spaces. It uses `thefuzz.ratio` and returns scores
+from 0 to 1; qualifying pairs retain deterministic input order.
+
+La respuesta sigue `ExtractionResponse`: una entrada en `extracted_names` por
+aparición localizada y parejas distintas en `fuzzy_matches`. Las páginas comienzan
+en cero; los cuadros usan puntos relativos a la esquina superior izquierda del
+área de recorte sin rotar. Se ejecuta OCR una sola vez por solicitud. Los spans
+NER se relacionan con palabras OCR de la misma página; las asociaciones inseguras
+o distantes se omiten en lugar de inventar coordenadas. Si un nombre ocupa dos
+líneas contiguas, su único rectángulo puede incluir espacio en blanco. La similitud
+de nombres completos ignora mayúsculas y acentos, elimina apóstrofos y trata la
+demás puntuación como espacios. Usa `thefuzz.ratio`, devuelve puntuaciones de 0 a
+1 y conserva un orden determinista de entrada.
+
+`400`: invalid PDF or malformed `Content-Length`; `408`: upload timeout;
+`413`: configured size or complexity limit; `422`: invalid multipart or names;
+`503`: no capacity or dependency unavailable; `504`: processing timeout. Error
+messages do not include document text. / Los mismos códigos indican PDF o
+`Content-Length` inválido (`400`), timeout de carga (`408`), límite excedido
+(`413`), multipart o nombres inválidos (`422`), falta de capacidad o dependencia
+(`503`) y timeout de procesamiento (`504`). Los errores no incluyen el documento.
 
 | Variable | Default | Scope / alcance |
 |---|---:|---|
 | `MAX_REQUEST_BYTES` | 22020096 (21 MiB) | Entire extraction request body, including multipart boundaries, part headers, fields and file / cuerpo completo, incluidos separadores multipart, cabeceras de partes, campos y archivo. |
 | `MAX_UPLOAD_BYTES` | 20971520 (20 MiB) | PDF limit already enforced by OCR, separately from the request body / límite del PDF ya aplicado por OCR, independiente del cuerpo. |
-| `MAX_NAMES_BYTES` | 65536 (64 KiB) | UTF-8 size of the **decoded form field**, including JSON syntax; checked after multipart parsing / tamaño UTF-8 del **campo decodificado**, incluida la sintaxis JSON; se verifica después de procesar multipart. |
+| `MAX_NAMES_BYTES` | 65536 (64 KiB) | Raw text part and UTF-8 size of the decoded JSON field / parte de texto cruda y tamaño UTF-8 del campo JSON decodificado. |
 | `MAX_NAMES_COUNT` | 1000 | Maximum number of pairs; an empty list is valid / máximo de parejas; una lista vacía es válida. |
-| `FUZZY_THRESHOLD` | 0.90 | Future matching threshold, finite and within `0..1` / futuro umbral de comparación, finito y entre `0..1`. |
+| `MAX_NAME_CHARS` | 512 | Maximum characters per query component and detected span / máximo de caracteres por componente consultado y entidad detectada. |
+| `FUZZY_THRESHOLD` | 0.90 | Full-name matching threshold, finite and within `0..1` / umbral de nombres completos, finito y entre `0..1`. |
+| `EXTRACT_MAX_IN_FLIGHT` | 2 | Maximum in-flight extraction requests per application process / máximo de solicitudes simultáneas por proceso. |
+| `EXTRACT_UPLOAD_TIMEOUT_SECONDS` | 30 | Total body-read deadline / plazo total para leer el cuerpo. |
+| `MAX_EXTRACTED_NAMES` | 1000 | Maximum NER occurrences before location mapping / máximo de entidades NER antes de localizarlas. |
+| `MAX_FUZZY_COMPARISONS` | 100000 | Maximum possible distinct extracted-name/query comparisons / máximo de comparaciones posibles entre nombres extraídos distintos y consultas. |
+| `MAX_FUZZY_WORK_UNITS` | 100000000 | Maximum product of total normalized extracted-name and query lengths / máximo del producto de longitudes normalizadas de nombres extraídos y consultados. |
 
 The body guard counts the actual ASGI chunks consumed by the application even
 when `Content-Length` is missing or too small. It returns `413` when that limit
 is exceeded, and `400` for malformed or repeated `Content-Length` headers. It
 does not consume a body that the application never reads, and a response already
-started cannot be changed to `413`: the future endpoint must read the body before
-responding. The guard does **not** limit concurrent uploads or their reading time.
-Admission before multipart parsing and global limits across HTTP workers remain
-pending. The `names` validator reports distinct invalid-input and limit errors;
-the future endpoint still has to map them to HTTP responses. FastAPI's default
-multipart parser can itself return `400` for a text field larger than 1 MiB before
-that validator runs; integration must resolve this if the planned `413` is to be
-consistent for oversized fields.
+started cannot be changed to `413`. The endpoint consumes its form before
+responding. A per-process admission limit is acquired before multipart parsing;
+excess requests are rejected without reading their body. Uploads have a deadline,
+and the multipart parser limits the PDF and text fields incrementally. These
+controls are **not global** across HTTP workers or replicas. If a caller cancels,
+already-started OCR/NER work remains supervised under its own service limits.
 
 El límite del cuerpo cuenta los fragmentos ASGI que consume la aplicación aunque
 falte `Content-Length` o declare menos bytes. Devuelve `413` al superar el límite
 y `400` si `Content-Length` es inválido o está repetido. No consume cuerpos que
-la aplicación no lee y no puede cambiar a `413` una respuesta ya iniciada: el
-futuro endpoint debe leer el cuerpo antes de responder. El límite **no** controla
-la concurrencia ni el tiempo de lectura de las cargas. La admisión previa al
-parseo multipart y los límites globales entre workers HTTP siguen pendientes.
-El validador de `names` distingue entrada inválida de límite excedido; el futuro
-endpoint aún debe traducir esos errores a HTTP. El parser multipart por defecto
-de FastAPI puede devolver `400` ante un campo de texto mayor de 1 MiB antes de que
-se ejecute el validador; la integración debe resolverlo para que el `413` previsto
-sea coherente con todos los campos excesivos.
+la aplicación no lee y no puede cambiar a `413` una respuesta ya iniciada. El
+endpoint consume el formulario antes de responder. La admisión por proceso se
+adquiere antes del parseo multipart; el exceso se rechaza sin leer el cuerpo.
+Las cargas tienen plazo y el parser limita incrementalmente el PDF y los campos
+de texto. Estos controles **no son globales** entre workers HTTP o réplicas. Si se
+cancela la solicitud, el OCR/NER ya iniciado permanece supervisado bajo los
+límites propios de cada servicio.
 
 ### Person detection / Detección de personas
 
@@ -559,8 +589,8 @@ aplicación. Para código síncrono existen `SpacyPersonRecognizer` y
 | `NER_SHUTDOWN_TIMEOUT_SECONDS` | 10 | Grace period for active work and worker exit / espera para trabajos activos y salida del proceso. |
 
 The existing `MAX_PDF_PAGES` also bounds the number of pages sent to NER. Limits
-are per process, not shared across HTTP workers or replicas; concurrency for the
-complete OCR-to-NER flow remains to be designed. On a timeout the worker is
+are per process, not shared across HTTP workers or replicas. Extraction admission
+also bounds the HTTP flow per process. On a timeout the worker is
 terminated; a cancelled caller does not release an already-running job's capacity
 until that work finishes or times out. Abrupt machine/container termination cannot
 guarantee cleanup. The English small model predicts entity labels: filtering
@@ -568,13 +598,80 @@ guarantee cleanup. The English small model predicts entity labels: filtering
 Sample OCR/NER observations and their limitations are in `docs/TEST_LOG.md`.
 
 El límite existente `MAX_PDF_PAGES` también limita las páginas enviadas a NER.
-Los límites son por proceso, no globales entre workers HTTP o réplicas; aún falta
-diseñar la admisión del flujo completo OCR–NER. Ante un timeout se termina el
+Los límites son por proceso, no globales entre workers HTTP o réplicas; la admisión
+de extracción también limita el flujo HTTP por proceso. Ante un timeout se termina el
 proceso; si se cancela quien llama, un trabajo ya iniciado conserva su capacidad
 hasta terminar o agotar su plazo. Una caída abrupta de la máquina o contenedor no
 garantiza limpieza. El modelo pequeño de inglés predice etiquetas: filtrar
 `PERSON` **no** garantiza que todos los resultados sean personas ni que encuentre
 todos los nombres. Las observaciones y limitaciones están en `docs/TEST_LOG.md`.
+
+### Smoke checks without a UI / Verificaciones reales sin interfaz
+
+These optional checks use the current code, real Tesseract and spaCy, and the
+repository's `sample_pdfs/meeting_minutes.pdf`; there are no mocks. They require
+Docker Engine. Build a dedicated local image once, and rebuild it when the
+Dockerfile or dependencies change. Building may require network access, but does
+not start or restart the existing Compose services.
+
+Estas verificaciones opcionales utilizan el código actual, Tesseract y spaCy
+reales, y `sample_pdfs/meeting_minutes.pdf`; no usan mocks. Requieren Docker
+Engine. Construye una imagen local dedicada y vuelve a construirla cuando cambien
+el Dockerfile o las dependencias. La construcción puede necesitar red, pero no
+inicia ni reinicia los servicios Compose existentes.
+
+```bash
+# From the repository root / Desde la raíz del repositorio:
+docker build -t document-intelligence-smoke:local .
+
+# One check at a time, or both / Una verificación a la vez, o ambas:
+bash scripts/smoke/ejecutar.sh componentes
+bash scripts/smoke/ejecutar.sh http
+bash scripts/smoke/ejecutar.sh todo
+```
+
+`componentes` checks OCR word offsets, NER spans, page bounds and fuzzy matching
+directly. `http` sends real HTTP requests to Uvicorn in the temporary container:
+it checks the sample PDF, an empty name list, invalid inputs and the center of a
+box in an **in-memory synthetic**, cropped and rotated scan. The scripts return
+nonzero on failure. They expect the known names in the sample; counts and model
+predictions may vary across environments.
+
+`componentes` comprueba directamente offsets OCR, spans NER, límites de página
+y fuzzy. `http` envía solicitudes HTTP reales a Uvicorn dentro del contenedor
+temporal: comprueba el PDF de ejemplo, una lista vacía, entradas inválidas y el
+centro de un cuadro en un escaneo **sintético en memoria**, recortado y rotado.
+Los scripts devuelven un código distinto de cero si falla una condición. Esperan
+los nombres conocidos de la muestra; los recuentos y predicciones pueden variar.
+
+Each check uses disposable containers with `--network none`; code, scripts and
+sample PDFs are mounted read-only. HTTP uses loopback inside the container and
+publishes no host ports. Only the HTTP container created by the runner is stopped;
+cleanup cannot be guaranteed after an abrupt termination. The container uses its
+image's configuration, not the host's Compose `.env`. To use another compatible
+local image, set `SMOKE_IMAGE`, for example:
+
+Cada verificación usa contenedores temporales con `--network none`; código,
+scripts y PDF de muestra se montan en solo lectura. HTTP usa loopback dentro del
+contenedor y no publica puertos en el host. Solo se detiene el contenedor HTTP
+creado por el ejecutor; ante una terminación abrupta no puede garantizarse la
+limpieza. El contenedor usa la configuración de su imagen, no el `.env` de
+Compose del host. Para usar otra imagen local compatible, indica `SMOKE_IMAGE`:
+
+```bash
+SMOKE_IMAGE=another-local-image:tag bash scripts/smoke/ejecutar.sh todo
+```
+
+The field-size check expects `MAX_NAMES_BYTES` at most 1 MiB and enough request
+capacity for the sample PDF and that field; the image built above uses compatible
+defaults. These checks do not test Compose, Qdrant, production traffic or general
+model accuracy, and do not replace pytest or human visual review (MT-002).
+
+La comprobación del tamaño del campo requiere `MAX_NAMES_BYTES` de hasta 1 MiB y
+espacio suficiente en la solicitud para el PDF y ese campo; la imagen construida
+arriba usa valores compatibles. Estas verificaciones no prueban Compose, Qdrant,
+tráfico de producción ni la precisión general del modelo, y no sustituyen pytest
+ni la revisión visual humana (MT-002).
 
 Test commands, observed results and incident resolutions are recorded in
 [`docs/TEST_LOG.md`](docs/TEST_LOG.md); human review results are recorded in

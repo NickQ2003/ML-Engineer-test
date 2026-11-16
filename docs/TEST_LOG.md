@@ -998,6 +998,190 @@ y conserva su imagen anterior. Una consulta exploratoria a la API de GitHub fall
 por comillas incorrectas en el script; no fue necesaria para instalar el wheel,
 cuya resolución y carga se comprobaron con `uv` y las pruebas descritas.
 
+## 2026-11-15 — Hito 3: endpoint de extracción y cuadros
+
+**Entorno:** Docker sobre macOS ARM64; Linux aarch64, Python 3.12.16,
+FastAPI 0.163.0, Starlette 1.10.0, Tesseract inglés, spaCy 3.8.18,
+`en_core_web_sm` 3.8.0 y pytest 9.2.0.
+
+**Alcance:** endpoint real `POST /api/extract`, asociación de spans con palabras
+OCR por página, cuadros, fuzzy matching de nombres completos, validación de
+multipart y admisión HTTP por proceso. `app/models/schemas.py` no cambió.
+
+### Construcción y batería completa
+
+```bash
+docker compose config --quiet
+docker compose build app
+docker run --rm \
+  -v "$PWD/tests:/tests:ro" \
+  -v "$PWD/sample_pdfs:/samples:ro" \
+  -e SAMPLE_PDFS_DIR=/samples \
+  --entrypoint /bin/sh ml-engineer-test-app:latest \
+  -c 'uv pip install --target /tmp/test-deps "pytest==9.2.0" && PYTHONPATH=/tmp/test-deps:/app python -m pytest -p no:cacheprovider /tests/unit /tests/integration'
+git diff --check
+git diff -- app/models/schemas.py
+```
+
+**Resultado:** imagen construida; `collected 264 items` → **`264 passed in
+42.53s`**. Los comandos de configuración y `git diff` terminaron sin salida.
+
+La batería cubre posiciones repetidas y multipágina, palabras cercanas pero no
+relacionadas, límites y validación de coordenadas, coincidencia de cadena completa,
+acentos y umbral. Comprueba errores, archivo corrupto o protegido, multipart
+incompleto, campos mayores de 1 MiB, exceso de páginas, límites de longitud y trabajo de comparación,
+rechazo antes de leer cuando no hay capacidad,
+uploads fragmentados con `Content-Length` ausente o falso, timeout y cierre de
+temporales. Una prueba usa el endpoint real con OCR y NER reales en el PDF de
+ejemplo; otra comprueba el centro de los cuadros en dos páginas escaneadas
+sintéticas contra posiciones conocidas; otra verifica un escaneo rotado y
+recortado. `/health` se probó mientras el endpoint
+esperaba un NER simulado. El parser específico corrige el `400` documentado en
+la etapa anterior: los campos excesivos probados responden `413`.
+
+### Compose y HTTP reales, aislados
+
+Para no reiniciar los contenedores del usuario se utilizó un proyecto Compose
+distinto y un volumen nuevo únicamente para esta comprobación:
+
+```bash
+APP_PORT=18087 docker compose -p hito3verify20261115 up --build -d
+APP_PORT=18087 docker compose -p hito3verify20261115 ps
+curl --fail --silent --show-error http://localhost:18087/health
+curl --fail --silent --show-error --max-time 180 \
+  -F 'pdf_file=@sample_pdfs/meeting_minutes.pdf;type=application/pdf' \
+  -F 'names=[{"first_name":"Thomas","last_name":"Muller"}]' \
+  http://localhost:18087/api/extract | python3 -c 'import json,sys; x=json.load(sys.stdin); pages=sorted({n["bounding_box"]["page_number"] for n in x["extracted_names"] if n["name"] == "Thomas Muller"}); matches=[m for m in x["fuzzy_matches"] if m["matched_name"] == "Thomas Muller"]; assert pages == [0,1] and matches and matches[0]["score"] == 1.0; print("HTTP extraction: ok | pages:", pages, "| detected:", len(x["extracted_names"]), "| matches:", len(x["fuzzy_matches"]))'
+curl --fail --silent --show-error --max-time 180 -H 'Transfer-Encoding: chunked' \
+  -F 'pdf_file=@sample_pdfs/meeting_minutes.pdf;type=application/pdf' \
+  -F 'names=[{"first_name":"Thomas","last_name":"Muller"}]' \
+  http://localhost:18087/api/extract | python3 -c 'import json,sys; x=json.load(sys.stdin); pages=sorted({n["bounding_box"]["page_number"] for n in x["extracted_names"] if n["name"] == "Thomas Muller"}); assert pages == [0,1]; print("Chunked HTTP extraction: ok | pages:", pages, "| detected:", len(x["extracted_names"]))'
+APP_PORT=18087 docker compose -p hito3verify20261115 down --volumes
+```
+
+**Salida relevante:** ambos servicios estuvieron activos; `/health` devolvió
+`{"status":"ok"}`; extracción HTTP y chunked devolvieron páginas `[0, 1]` y
+22 apariciones; la primera devolvió una coincidencia para `Thomas Muller` con
+puntuación `1.0`. Al terminar se eliminaron únicamente los contenedores, red y
+volumen creados para el proyecto temporal. El Compose preexistente no se reinició.
+
+### Evidencia para revisión visual humana
+
+Se generó `docs_dev/meeting_minutes_names_visual.pdf` a partir de la respuesta
+del endpoint real y del PDF de ejemplo. El destino se abrió en modo exclusivo para
+evitar sobrescribir un archivo existente. Se dibujaron **12 cuadros en la página 0
+y 10 en la página 1**; un span se omitió por no poder asociarlo con seguridad.
+La copia permanece fuera de Git. **La revisión humana sigue pendiente** y se
+registra como MT-002 en [MANUAL_TEST_LOG.md](MANUAL_TEST_LOG.md).
+
+```bash
+docker run --rm --network none -i --user "$(id -u):$(id -g)" \
+  -v "$PWD/sample_pdfs:/samples:ro" -v "$PWD/docs_dev:/output" \
+  --entrypoint python ml-engineer-test-app:latest - <<'PY'
+from collections import Counter
+import json
+from pathlib import Path
+import pymupdf
+from fastapi.testclient import TestClient
+from app.main import app
+
+source = Path('/samples/meeting_minutes.pdf')
+destination = Path('/output/meeting_minutes_names_visual.pdf')
+if destination.exists():
+    raise SystemExit('The visual review file already exists; it was not overwritten')
+with TestClient(app) as client:
+    response = client.post('/api/extract', files={
+        'pdf_file': ('meeting_minutes.pdf', source.read_bytes(), 'application/pdf'),
+        'names': (None, json.dumps([{'first_name': 'Thomas', 'last_name': 'Muller'}])),
+    })
+    response.raise_for_status()
+    result = response.json()
+with pymupdf.open(source) as pdf:
+    for item in result['extracted_names']:
+        box = item['bounding_box']
+        rect = pymupdf.Rect(box['x'], box['y'], box['x'] + box['width'], box['y'] + box['height'])
+        pdf[box['page_number']].draw_rect(rect, color=(1, 0, 0), width=0.8, overlay=True)
+    with destination.open('xb') as output:
+        pdf.save(output, deflate=True)
+counts = Counter(item['bounding_box']['page_number'] for item in result['extracted_names'])
+print('output: docs_dev/meeting_minutes_names_visual.pdf')
+print('pages:', len(counts), '| boxes per page:', [counts[index] for index in range(2)])
+print('fuzzy matches:', len(result['fuzzy_matches']))
+PY
+```
+
+**Limitaciones:** el modelo NER puede omitir personas o clasificar texto que no
+es una persona; las heurísticas geométricas también pueden omitir ubicaciones.
+La admisión es por proceso, no global; falta calibración bajo carga real. La
+prueba visual de nombres completos aún no ha sido aprobada por una persona.
+RAG e ingestión no forman parte de este hito.
+
+## 2026-11-16 — Verificaciones reales compartidas
+
+**Entorno:** Docker Desktop en macOS ARM64; imagen Linux construida desde el
+Dockerfile del proyecto, con Tesseract y el modelo spaCy instalados.
+
+**Objetivo:** verificar los scripts compartidos en `scripts/smoke/` sin mocks y
+sin iniciar ni reiniciar los servicios Compose existentes.
+
+```bash
+docker build -t document-intelligence-smoke:local .
+bash -n scripts/smoke/ejecutar.sh
+bash scripts/smoke/ejecutar.sh --help
+bash scripts/smoke/ejecutar.sh todo
+```
+
+**Resultado:** la imagen se construyó y `todo` pasó. Los componentes localizaron
+22 apariciones y omitieron un span por asociación insegura; se obtuvo una pareja
+fuzzy exacta para `Thomas Muller`. Por HTTP real, `/health` y los casos válidos
+respondieron `200`; JSON inválido `422`, contenido no PDF `400` y campo `names`
+excesivo `413`. Una lista vacía no impidió extraer nombres. En el escaneo
+sintético recortado y rotado, el centro del cuadro detectado cayó en la posición
+conocida. Los contenedores temporales se eliminaron.
+
+Se comprobó también `componentes` desde un directorio externo usando otra imagen
+local mediante `SMOKE_IMAGE`; pasó. Un argumento desconocido devolvió código `2`
+y una imagen inexistente devolvió `1`. Una interrupción `SIGINT` controlada de
+`http` devolvió `130` y dejó eliminado el contenedor temporal creado. Los
+servicios Compose preexistentes siguieron activos.
+
+**Limitaciones:** la muestra tiene nombres conocidos y los textos de fuzzy y el
+escaneo rotado incluyen datos sintéticos; los servicios que los procesan son
+reales. Estas comprobaciones no prueban Compose, Qdrant, carga ni precisión
+general. Hay solapamiento con las pruebas de integración que usan `TestClient`,
+pero el script HTTP levanta Uvicorn y usa loopback real. En esa comprobación no se
+repitió la batería de 264 pruebas; la revisión visual humana MT-002 sigue pendiente.
+
+### Repetición de la batería antes de los commits
+
+Se construyó una imagen temporal con pytest a partir de la imagen de smoke. La
+instalación de pytest durante la construcción requirió acceso a dependencias;
+las pruebas se ejecutaron después en un contenedor sin red externa, montando
+código, pruebas y PDF en solo lectura:
+
+```bash
+docker build -t document-intelligence-pytest-verify-20261116:local - <<'EOF'
+FROM document-intelligence-smoke:local
+RUN uv pip install --target /tmp/test-deps "pytest==9.2.0"
+EOF
+docker run --rm --network none \
+  -v "$PWD/app:/app/app:ro" \
+  -v "$PWD/tests:/tests:ro" \
+  -v "$PWD/sample_pdfs:/samples:ro" \
+  -e PYTHONPATH=/tmp/test-deps:/app -e SAMPLE_PDFS_DIR=/samples \
+  --entrypoint python document-intelligence-pytest-verify-20261116:local \
+  -m pytest -p no:cacheprovider /tests/unit /tests/integration
+```
+
+**Resultado:** `collected 264 items` → **`264 passed in 44.21s`**. La repetición
+no sustituye la revisión visual humana MT-002 y no inició ni reinició Compose.
+
+Para comprobar los commits intermedios sin usar los cambios pendientes del árbol
+de trabajo, se extrajo cada revisión con `git archive` en otro contenedor sin red:
+en `b3b5bdf`, `test_bbox_and_fuzzy.py` pasó sus **17 pruebas**; en `673bc8b`, las
+pruebas de cuadros, configuración, contratos, OCR asíncrono y límites HTTP pasaron
+**121 pruebas**. Estas baterías incluyen pruebas unitarias con componentes simulados.
+
 ## Plantilla para próximas ejecuciones
 
 ````markdown

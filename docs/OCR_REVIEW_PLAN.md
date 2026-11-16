@@ -2,8 +2,8 @@
 
 **Fecha:** 2026-11-15
 
-**Estado:** correcciones implementadas a nivel de servicio; integración HTTP y
-límites globales pendientes.
+**Estado:** correcciones e integración HTTP implementadas; límites globales y
+calibración de producción pendientes.
 
 **Alcance:** servicio OCR y su ejecución asíncrona, antes de integrarlos en
 `/api/extract`. Los puntos siguientes conservan la evidencia y decisiones de la
@@ -23,15 +23,14 @@ validar; cualquier cambio de diseño debe registrarse en `DECISIONS.md`.
 | 1 | R-01 | Alta | Un PDF pequeño puede producir una imagen enorme | Corregido en servicio; umbral por calibrar |
 | 2 | R-02 | Alta | La cancelación directa puede dejar Tesseract y archivos temporales | Corregido en cierre/timeout controlados en POSIX |
 | 3 | R-03 | Alta | La rotación de metadatos puede corregir una imagen ya girada | Mitigado mediante heurística; precisión no garantizada |
-| 4 | R-04 | Media | El límite de procesos no limita la cola ni las copias de PDF | Parcial: servicio acotado; falta admisión HTTP y límite global |
-| 5 | R-05 | Media | El proveedor con caché puede crear varias instancias al inicio concurrente | Corregido en ciclo de vida; falta usarlo en el endpoint real |
+| 4 | R-04 | Media | El límite de procesos no limita la cola ni las copias de PDF | Parcial: admisión HTTP por proceso; falta límite global |
+| 5 | R-05 | Media | El proveedor con caché puede crear varias instancias al inicio concurrente | Corregido en ciclo de vida y conectado al endpoint |
 | 6 | R-06 | Baja | `LOG_LEVEL` se configura pero no se aplica | Corregido y probado |
 
-La admisión antes de procesar multipart y el uso de la dependencia compartida
-deben verificarse al implementar el endpoint real. Ahora existe un límite ASGI de
-bytes por solicitud para `/api/extract`; no equivale a una admisión de cargas
-concurrentes ni limita el tiempo de lectura. Los límites de OCR siguen siendo por
-proceso y no hay garantía de limpieza ante una caída abrupta de toda la máquina.
+`/api/extract` aplica admisión por proceso antes del parseo multipart, límites de
+bytes y plazo de lectura, y utiliza la dependencia OCR compartida. Los límites
+siguen siendo por proceso, no globales, y no hay garantía de limpieza ante una
+caída abrupta de toda la máquina.
 
 ## Implementación posterior a la revisión
 
@@ -51,13 +50,12 @@ proceso y no hay garantía de limpieza ante una caída abrupta de toda la máqui
   rotaciones. La confianza es una heurística, no una garantía de precisión.
 - **R-04:** límites por proceso de trabajos activos y en cola, espera máxima,
   timeout de lectura y `extract_stream_async()` que adquiere admisión antes de
-  leer. Un llamador que entregue `bytes` ya los habrá acumulado; el futuro HTTP
-  debe controlar la concurrencia de cargas antes del parseo multipart y manejar
-  saturación. El nuevo límite ASGI por cuerpo rechaza el exceso mientras se leen
-  fragmentos, pero no limita la cantidad ni la duración de cargas simultáneas.
+  leer. El endpoint HTTP limita por proceso las solicitudes admitidas antes del
+  parseo multipart, el tamaño completo y el tiempo de carga. El exceso de capacidad
+  se rechaza con `503`; no existe un límite global entre workers o réplicas.
 - **R-05:** el servicio se crea en el ciclo de vida FastAPI y se obtiene por
-  `app.api.dependencies.get_ocr_service`. Se prueba con solicitudes concurrentes
-  sobre una ruta de prueba; `/api/extract` todavía no existe.
+  `app.api.dependencies.get_ocr_service`, usada por `/api/extract`. Se prueba la
+  instancia compartida y el endpoint real con OCR y NER.
 - **R-06:** se valida y aplica `LOG_LEVEL` a los loggers de aplicación y Uvicorn;
   los logs propios de aplicación se emiten como JSON. Se prueba el nivel y la salida.
 

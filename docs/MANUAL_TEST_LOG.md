@@ -48,10 +48,34 @@ recuento técnico están en [TEST_LOG.md](TEST_LOG.md#2026-11-15--revisión-visu
 
 - Se revisó un PDF de ejemplo; esto no valida todos los documentos ni todos los
   casos de rotación o recorte.
-- Los rectángulos corresponden a **palabras OCR**, no a nombres completos
-  detectados por NER. Esa funcionalidad aún no está implementada.
+- Los rectángulos corresponden a **palabras OCR**. Esta revisión anterior no
+  valida los cuadros de nombres completos que se implementaron posteriormente.
 - La inspección visual de cuadros no verifica por sí sola que el texto reconocido
   coincida carácter por carácter ni establece una métrica de precisión.
+
+## MT-002 — Ubicación visual de nombres completos
+
+| Campo | Valor |
+|---|---|
+| Fecha de preparación | 2026-11-15 |
+| Persona revisora | Pendiente |
+| Resultado | **Pendiente de revisión humana** |
+| Documento original | `sample_pdfs/meeting_minutes.pdf` |
+| Evidencia visual | `docs_dev/meeting_minutes_names_visual.pdf`, copia local excluida de Git |
+| Alcance previsto | Cuadros de nombres completos devueltos por `/api/extract` en las dos páginas |
+
+### Procedimiento propuesto
+
+1. Abrir la copia local con los cuadros rojos y compararla con el PDF original.
+2. Revisar ambas páginas: cada cuadro debe rodear el nombre que corresponde sin
+   incluir nombres lejanos ni quedar desplazado. Observar posibles omisiones y
+   falsos positivos del modelo NER.
+3. Comunicar los resultados de la revisión para registrarlos aquí. La generación
+   de la evidencia y las pruebas automatizadas **no** constituyen una aprobación.
+
+El archivo fue generado a partir de la respuesta del endpoint real; el comando y
+recuento técnico se registran en [TEST_LOG.md](TEST_LOG.md). La copia permanece
+fuera de Git y no garantiza el comportamiento en otros documentos ni rotaciones.
 
 ## Plantilla para próximas pruebas manuales
 

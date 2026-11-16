@@ -30,7 +30,7 @@
 - **Trade-offs:** confidence-based orientation is heuristic and may select the
   wrong result; arbitrary skew is not corrected. The default image includes only
   English language data. Byte size, page count, rendered pixels, DPI and timeouts
-  are bounded and configurable. Upload/HTTP validation remains to be implemented.
+  are bounded and configurable. HTTP validation and admission are described below.
   See [the OCR review plan](docs/OCR_REVIEW_PLAN.md) for remaining limitations.
 
 ## Asynchronous OCR without changing the API contract
@@ -42,13 +42,13 @@
   The synchronous methods remain available for non-async callers.
 - **Why:** simply making a function `async` would not make PyMuPDF and Tesseract
   non-blocking. Process isolation also avoids parallel PyMuPDF work in threads.
-- **Trade-offs:** limits are per application worker, not global. Admission before
-  multipart parsing remains a future endpoint concern. A cancelled caller does
+- **Trade-offs:** limits are per application worker, not global. The endpoint
+  now adds per-process admission before multipart parsing. A cancelled caller does
   not immediately stop a started job; the service supervises it through a total
   deadline and uses process-group cleanup on shutdown or timeout. No durable
   queue exists, and abrupt machine/container termination can defeat cleanup.
-  The future endpoint must use the lifespan-managed dependency and preserve the
-  fixed response contract. See [the review plan](docs/OCR_REVIEW_PLAN.md).
+  The endpoint uses the lifespan-managed dependency and preserves the fixed
+  response contract. See [the review plan](docs/OCR_REVIEW_PLAN.md).
 
 ## Resource admission and logging
 
@@ -58,9 +58,9 @@
   `LOG_LEVEL` to application and Uvicorn loggers; application records use JSON.
 - **Trade-offs:** the pixel limit needs calibration against actual memory and
   document sizes. Limits are not shared between server processes or replicas.
-  The future HTTP endpoint must enforce admission before buffering multipart
-  bodies and translate saturation and timeout errors to HTTP responses. Logs
-  contain job status and page counts, not document content or credentials.
+  HTTP admission is bounded per process before multipart parsing; global limits
+  remain pending. Logs contain job status and page counts, not document content
+  or credentials.
 - **Preliminary measurement:** two concurrent OCR jobs on a synthetic raster
   page near the 20-million-pixel limit peaked at 985.3 MiB in an isolated
   container capped at 2 GiB. This is not a production capacity guarantee; see
@@ -69,11 +69,11 @@
 ## Extraction input contracts and request byte guard
 
 - **Decision:** retain the public schemas unchanged. Introduce an immutable,
-  page-local `PersonSpan` and validate the future `names` JSON against the
+  page-local `PersonSpan` and validate the `names` JSON against the
   existing `NamePair`, rejecting blank names without rewriting the original
   strings. Bound the UTF-8 size of the decoded field to 64 KiB and its list to
   1,000 items by default; allow an empty list. Reserve a configurable, finite
-  fuzzy threshold of 0.90 without implementing fuzzy matching yet.
+  fuzzy threshold of 0.90.
 - **HTTP protection:** for `POST /api/extract`, limit the complete consumed body
   to 21 MiB by default, including multipart overhead. Reject a declared excessive
   length early, reject malformed/repeated lengths, and count received bytes even
@@ -86,12 +86,11 @@
   when upgrading Starlette or changing middleware layers. If a response has
   already started, the guard propagates the error rather than sending a second
   response; the ASGI server must handle the interrupted response.
-- **Limits:** the guard only counts bytes the application reads; it is not a
-  concurrent-upload admission limit or a slow-upload deadline. The `names`
-  validator runs after multipart parsing and is not yet wired to a real endpoint.
-  FastAPI's default 1 MiB per-text-field parser limit can yield `400` before the
-  validator; the endpoint integration must address the planned `413` mapping.
-  Global worker/replica limits and real `/api/extract` testing remain pending.
+- **Limits:** the guard only counts bytes the application reads. It now also
+  admits at most two in-flight requests per application process and limits upload
+  time. The endpoint uses a bounded multipart parser that rejects excessive file
+  and text parts with `413` and requires a final boundary. Global worker/replica
+  limits remain pending.
 
 ## Page-local NER and reproducible model
 
@@ -111,14 +110,41 @@
   memory erasure. A
   started job remains supervised if its caller cancels; a timeout or shutdown
   terminates an unresponsive process group. The FastAPI lifespan shares one
-  service per application process; `/api/extract` is not yet connected to it.
+  service per application process; `/api/extract` uses that shared service.
 - **Trade-offs:** model download requires network and the upstream release to be
-  available during installation. Limits are per application process, not global,
-  and do not control admission of the complete OCR-to-NER flow. Workers require
+  available during installation. Limits, including admission of the HTTP flow,
+  are per application process, not global. Workers require
   POSIX and cleanup cannot be guaranteed after an abrupt machine/container death.
   The English small model can miss names or label non-persons as `PERSON`; no
   accuracy or multilingual guarantee is claimed. Observations on sample PDFs are
   recorded in [the test log](docs/TEST_LOG.md).
+
+## Extraction orchestration, locations and matching
+
+- **Decision:** parse one `pdf_file` and one JSON `names` field incrementally;
+  acquire HTTP admission before parsing and run OCR once. Detect page-local NER
+  spans, associate them with the same OCR page's ordered words, then union their
+  boxes. Preserve one location per occurrence. If offsets, blocks, line adjacency
+  or geometry are inconsistent, omit the location rather than invent a box.
+- **Geometry trade-off:** same-line word gaps may not exceed four times the
+  larger word height; adjacent lines must share block and paragraph and have a
+  bounded vertical gap. Partial-word spans use the complete OCR word's box. A
+  wrapped name uses one enclosing rectangle, which may contain whitespace.
+  These conservative heuristics can omit difficult but genuine names.
+- **Matching:** normalize full names with Unicode decomposition, casefold and
+  accent removal; remove apostrophes and convert other punctuation to spaces.
+  Use full-string `thefuzz.ratio`, score `0..1`, include all pairs at or above
+  the configured threshold and deduplicate identical string pairs. Preserve
+  original detected names and the requested spelling apart from outer whitespace.
+- **Limits and trade-offs:** 1,000 NER spans, 512 characters per query-name
+  component or detected span, and 100,000 potential comparisons per document by
+  default. The product of total normalized extracted and query lengths is also
+  bounded to limit long-string matching work. Exceeding a limit rejects rather
+  than truncates.
+  Admission and OCR/NER limits are per process, not global. A cancelled HTTP
+  caller can release its HTTP slot while started OCR/NER work remains supervised
+  by those services' independent bounds. Human review of full-name boxes and
+  production capacity calibration remain pending.
 
 ## Use of AI tools
 
