@@ -27,8 +27,8 @@ class _FilePartTooLarge(MultiPartException):
 class _ExtractionMultipartParser(MultiPartParser):
     """Enforce part sizes while parsing and require a terminating boundary."""
 
-    def __init__(self, headers, stream, settings: Settings):
-        super().__init__(headers, stream, max_files=1, max_fields=1, max_part_size=settings.max_names_bytes)
+    def __init__(self, headers, stream, settings: Settings, *, max_fields: int = 1):
+        super().__init__(headers, stream, max_files=1, max_fields=max_fields, max_part_size=settings.max_names_bytes)
         self.file_limit = settings.max_upload_bytes
         self.file_bytes = 0
         self.complete = False
@@ -58,13 +58,13 @@ async def close_extraction_form(form: FormData) -> None:
         raise
 
 
-async def parse_extraction_form(request: Request, settings: Settings) -> FormData:
+async def parse_extraction_form(request: Request, settings: Settings, *, max_fields: int = 1) -> FormData:
     """Parse once; the caller owns and must close the returned form and its file."""
     media_type, _ = parse_options_header(request.headers.get("content-type", ""))
     if media_type.lower() != b"multipart/form-data":
         raise InvalidMultipartError("Expected multipart form data")
     async with aclosing(request.stream()) as stream:
-        parser = _ExtractionMultipartParser(request.headers, stream, settings)
+        parser = _ExtractionMultipartParser(request.headers, stream, settings, max_fields=max_fields)
         try:
             form = await parser.parse()
         except _TextPartTooLarge:

@@ -69,3 +69,33 @@ def test_extraction_flow_limits_can_be_set_from_environment(monkeypatch):
     assert (settings.extract_max_in_flight, settings.extract_upload_timeout_seconds) == (3, 15)
     assert (settings.max_extracted_names, settings.max_fuzzy_comparisons) == (40, 200)
     assert (settings.max_name_chars, settings.max_fuzzy_work_units) == (50, 4000)
+
+
+@pytest.mark.parametrize("value", [0, 1, 2, 3])
+def test_name_recovery_levels_are_configurable_from_environment(monkeypatch, value):
+    monkeypatch.setenv("NER_NAME_RECOVERY_PASSES", str(value))
+    assert Settings().ner_name_recovery_passes == value
+    assert Settings(ner_name_recovery_passes=value).ner_name_recovery_passes == value
+
+
+def test_name_recovery_is_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("NER_NAME_RECOVERY_PASSES", raising=False)
+    assert Settings().ner_name_recovery_passes == 0
+
+
+@pytest.mark.parametrize("value", [-1, 4, True, False, 1.0, "1.0", "yes", ""])
+def test_invalid_name_recovery_levels_are_rejected(value):
+    with pytest.raises(ValidationError):
+        Settings(ner_name_recovery_passes=value)
+
+
+@pytest.mark.parametrize("options", [
+    {"ingest_chunk_tokens": 2}, {"ingest_chunk_tokens": 257}, {"ingest_overlap_tokens": 126},
+    {"embedding_query_max_tokens": 257}, {"ingest_max_chunks": 0}, {"ingest_max_in_flight": 0},
+    {"qdrant_read_retries": 6}, {"qdrant_timeout_seconds": 0},
+    {"ingest_max_page_chars": 100, "ingest_max_document_chars": 50},
+    {"embedding_job_timeout_seconds": float("inf")},
+])
+def test_ingestion_limits_are_validated(options):
+    with pytest.raises(ValidationError):
+        Settings(**options)

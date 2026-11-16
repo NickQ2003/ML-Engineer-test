@@ -24,6 +24,7 @@ from PIL import Image
 from pytesseract import Output
 
 from app.core.config import Settings, get_settings
+from app.core.worker_environment import worker_environment
 from app.models.document import OCRDocument, OCRPage, OCRWord, WordBox
 
 logger = logging.getLogger(__name__)
@@ -219,7 +220,7 @@ class OCRService:
                 "max_upload_bytes", "max_pdf_pages", "max_page_pixels", "ocr_dpi",
                 "ocr_languages", "ocr_timeout_seconds", "ocr_orientation_min_confidence",
             })
-            env = {**os.environ, "TMPDIR": directory}
+            env = worker_environment(TMPDIR=directory)
             try:
                 process = await _start_worker(
                     sys.executable, "-m", "app.services.ocr_worker",
@@ -350,13 +351,26 @@ class OCRService:
         return OCRPage(page.number, visible.width, visible.height, "".join(parts), tuple(words))
 
 
+async def _finish_cancelled_task(task):
+    """Wait for supervised work even if its caller is cancelled repeatedly."""
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+        except BaseException:
+            break
+    if not task.cancelled():
+        task.exception()  # Consume any failure; the original cancellation wins.
+
+
 async def _run_blocking(function, *args):
     """Do not remove temporary files while a cancelled file operation is running."""
     task = asyncio.create_task(asyncio.to_thread(function, *args))
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
-        await task
+        await _finish_cancelled_task(task)
         raise
 
 

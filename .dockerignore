@@ -10,3 +10,5 @@ __pycache__
 docs_dev
 tests
 sample_pdfs
+data
+*.sqlite3*

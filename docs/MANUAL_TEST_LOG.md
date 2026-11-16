@@ -60,8 +60,8 @@ inferred by AI. The generation procedure and technical count are in
 | Field | Value |
 |---|---|
 | Preparation date | 2026-11-15 |
-| Reviewer | Pending |
-| Result | **Pending human review** |
+| Reviewer | Project user reported a preliminary observation; full review pending |
+| Result | **Not approved; full human review pending** |
 | Original document | `sample_pdfs/meeting_minutes.pdf` |
 | Visual evidence | `docs_dev/meeting_minutes_names_visual.pdf`, local copy excluded from Git |
 | Intended scope | Full-name boxes returned by `/api/extract` on both pages |
@@ -74,6 +74,16 @@ inferred by AI. The generation procedure and technical count are in
    and false positives from the NER model.
 3. Report the review results so they can be recorded here. Generating the
    evidence and running automated tests **do not** constitute approval.
+
+### Preliminary observation reported by the user
+
+The user reported that a name can be visible in OCR and detected as a person
+at one location while a later occurrence is not surrounded by a name box.
+The exact document positions were not supplied. This is an observation of an
+omission, not a completed evaluation of all boxes, false positives or accuracy.
+The cause of any particular omission still needs to be checked against the OCR
+words, NER spans and location validation. A repeat review after any recovery
+change is pending and must not be treated as automatic approval.
 
 The file was generated from the real endpoint response; the command and
 technical count are recorded in [TEST_LOG.md](TEST_LOG.md). The copy remains

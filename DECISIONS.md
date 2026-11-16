@@ -146,6 +146,87 @@
   by those services' independent bounds. Human review of full-name boxes and
   production capacity calibration remain pending.
 
+## Optional repeated-name recovery
+
+- **Decision:** keep `NER_NAME_RECOVERY_PASSES=0` by default. When explicitly
+  enabled, scan existing page-local OCR word boxes after NER using only validated
+  original NER names as references; never rerun OCR or spaCy and never promote
+  recovered candidates into new references. Levels 1–3 cumulatively add exact
+  normalized matches, separately scored name components with at most two
+  single-character edits, and exact compact-text segmentation matches. The
+  component score is at least 0.80 and components of three or fewer characters
+  must match exactly. Standalone edge punctuation is excluded from candidate
+  windows; true overlapping alternatives remain ambiguous. Single-word,
+  over-eight-component and over-512-character
+  references are excluded from the extra search, not the original NER response.
+- **Safety:** retain original OCR spelling and existing NER locations. Require
+  `PageLocator` validation, reject ambiguous or overlapping alternatives, and
+  count actual windows, comparisons, normalization/comparison work and final occurrences.
+  Limits fail with `413` rather than returning truncated results. The fixed
+  recovery component score is independent of the query-name `FUZZY_THRESHOLD`.
+- **Trade-offs:** these deterministic rules can improve recall but can propagate
+  a bad original NER label or match another person with an identical/similar
+  name. The fixed response schema has no per-occurrence recovery provenance.
+  False positives, false negatives, performance and multilingual behavior require
+  measurement and human review; MT-002 is not automatically approved.
+
+## Optional last-extraction preview
+
+- **Decision:** disabled by default. When explicitly enabled with a 32–256
+  character token, retain one successful extraction per application process:
+  a bounded PDF proxy and immutable JSON overlays for OCR, NER, enabled recovery
+  stages and the final response. Access is bearer-token protected; the fixed
+  public extraction schema remains unchanged.
+- **Lifetime:** starting the next accepted extraction clears the previous
+  preview, including if that extraction later fails. Generations prevent a slow
+  older request from republishing stale data. Previews expire after ten minutes
+  and are cleared on shutdown; no preview is stored in SQLite or a persistent
+  volume. Normal OCR/upload temporary-file behavior remains unchanged.
+- **Trade-offs:** this is a single-process, single-trusted-operator development
+  aid, not multi-tenant authorization, secure memory erasure or a shared store.
+  Any token holder may access the most recent document from any client; multiple
+  workers and replicas are not supported. Use trusted networking/TLS and a
+  sandboxed viewer, and treat every PDF and overlay as sensitive. Users can copy
+  returned data, and that copy cannot be revoked. Large previews may be skipped
+  without failing extraction. No UI is implemented by this feature.
+
+## OCR ingestion and recovery
+
+- **Model:** use `sentence-transformers/all-MiniLM-L6-v2` at revision
+  `1110a243fdf4706b3f48f1d95db1a4f5529b4d41`, with its ten required artifacts
+  SHA-256 verified during image construction and local loading. The model returns
+  384-dimensional vectors; the image build can require network access, inference
+  does not download the model.
+- **Chunking baseline:** up to 128 model tokens including special tokens, with at
+  most 32 overlapping content tokens, preserving whole words and physical pages.
+  Reject words that have no tokens or do not fit, rather than truncate them.
+  Accept `[UNK]`, which this tokenizer can emit for valid symbols and long words;
+  keep the original text but acknowledge that its embedding can lose meaning.
+  This is an initial configuration, not a measured retrieval optimum.
+- **Ledger:** retain each ingestion separately in persistent SQLite on a single
+  host. Store the input hash, processing signature and every physical page's
+  text-detection status and chunk count, without storing document text in SQLite.
+  Identical hashes do not automatically deduplicate requests.
+- **Pipeline:** `/api/ingest` runs bounded OCR, supervised local embeddings and
+  Qdrant insertion. It records empty OCR pages without generating fragments for
+  them, verifies expected points before completion and keeps each submission as
+  a separate attempt. The defaults include a 1,000-fragment document limit;
+  resource and admission bounds are per process and need production calibration.
+- **Collection ownership:** Qdrant `v1.13.6` ignored collection metadata in an
+  isolated probe, so a reserved manifest point binds the dedicated collection to
+  the fixed model, endpoint and ledger. Unmarked or incompatible collections are
+  refused, not adopted or deleted. All cooperating processes must share local
+  POSIX locks; independent writers or multiple hosts are not protected. Future
+  retrieval must filter out the manifest and incomplete ingestions.
+- **Recovery:** SQLite and Qdrant do not share a transaction. Persist write
+  uncertainty before each mutation; never blindly retry a write with an unknown
+  outcome. Cleanup is explicit, dry-run by default, scoped to one ingestion and
+  forbidden for an active or completed attempt. After an ambiguous write, the
+  operator must first establish remote quiescence and explicitly confirm it;
+  neither a timeout nor an empty count proves a delayed write cannot arrive.
+  A lost ledger, unmarked collection or abrupt failure needs manual inspection.
+  `/api/ask`, Celery and a general retrieval evaluation remain outside this hito.
+
 ## Use of AI tools
 
 OpenCode was used to help plan and implement infrastructure, OCR, NER and the

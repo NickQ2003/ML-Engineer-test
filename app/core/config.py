@@ -2,14 +2,14 @@
 
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Settings used by the application and its infrastructure adapters."""
 
-    model_config = SettingsConfigDict(extra="ignore")
+    model_config = SettingsConfigDict(extra="ignore", hide_input_in_errors=True)
 
     app_name: str = "Document Intelligence Service"
     app_env: str = "development"
@@ -25,10 +25,13 @@ class Settings(BaseSettings):
     fuzzy_threshold: float = Field(default=0.90, ge=0.0, le=1.0, allow_inf_nan=False)
     extract_max_in_flight: int = Field(default=2, gt=0)
     extract_upload_timeout_seconds: float = Field(default=30.0, gt=0, allow_inf_nan=False)
+    extract_preview_enabled: bool = False
+    extract_preview_token: SecretStr | None = None
     max_extracted_names: int = Field(default=1000, gt=0)
     max_fuzzy_comparisons: int = Field(default=100_000, gt=0)
     max_fuzzy_work_units: int = Field(default=100_000_000, gt=0)
     ner_model: str = Field(default="en_core_web_sm", min_length=1)
+    ner_name_recovery_passes: int = Field(default=0, ge=0, le=3)
     ner_max_page_chars: int = Field(default=100_000, gt=0, le=1_000_000)
     ner_max_document_chars: int = Field(default=1_000_000, gt=0)
     ner_max_concurrent_jobs: int = Field(default=1, gt=0)
@@ -48,6 +51,39 @@ class Settings(BaseSettings):
     ocr_document_timeout_seconds: float = Field(default=180.0, gt=0)
     ocr_shutdown_timeout_seconds: float = Field(default=10.0, gt=0)
     ocr_orientation_min_confidence: float = Field(default=80.0, ge=0, le=100)
+    embedding_model_dir: str = Field(default="/opt/models/all-minilm-l6-v2", min_length=1)
+    embedding_query_max_tokens: int = Field(default=256, gt=2, le=256)
+    embedding_batch_size: int = Field(default=16, gt=0, le=128)
+    embedding_job_timeout_seconds: float = Field(default=120, gt=0, allow_inf_nan=False)
+    ingestion_ledger_path: str = Field(default="/app/data/ingestion/ledger.sqlite3", min_length=1)
+    ingest_collection: str = Field(default="documents_minilm_1110a243_v1", min_length=1, pattern=r"^[a-zA-Z0-9_-]+$")
+    ingest_max_in_flight: int = Field(default=1, gt=0)
+    ingest_upload_timeout_seconds: float = Field(default=30, gt=0, allow_inf_nan=False)
+    ingest_job_timeout_seconds: float = Field(default=420, gt=0, allow_inf_nan=False)
+    ingest_max_chunks: int = Field(default=1000, gt=0, le=10000)
+    ingest_max_page_chars: int = Field(default=100_000, gt=0)
+    ingest_max_document_chars: int = Field(default=1_000_000, gt=0)
+    ingest_chunk_tokens: int = Field(default=128, gt=2, le=256)
+    ingest_overlap_tokens: int = Field(default=32, ge=0)
+    qdrant_timeout_seconds: int = Field(default=10, gt=0, le=120)
+    qdrant_read_retries: int = Field(default=2, ge=0, le=5)
+    qdrant_batch_size: int = Field(default=64, gt=0, le=256)
+
+    @model_validator(mode="after")
+    def validate_ingestion_limits(self):
+        if self.ingest_overlap_tokens >= self.ingest_chunk_tokens - 2:
+            raise ValueError("Ingestion overlap leaves no room for content")
+        if self.ingest_max_page_chars > self.ingest_max_document_chars:
+            raise ValueError("Page character limit exceeds document limit")
+        return self
+
+    @model_validator(mode="after")
+    def validate_extract_preview(self):
+        if self.extract_preview_enabled:
+            token = self.extract_preview_token.get_secret_value() if self.extract_preview_token else ""
+            if not 32 <= len(token) <= 256 or any(not 33 <= ord(char) <= 126 for char in token):
+                raise ValueError("EXTRACT_PREVIEW_TOKEN must contain 32–256 printable non-space ASCII characters")
+        return self
 
     @field_validator("ner_model")
     @classmethod
@@ -56,6 +92,17 @@ class Settings(BaseSettings):
         if not model:
             raise ValueError("NER_MODEL must not be blank")
         return model
+
+    @field_validator("ner_name_recovery_passes", mode="before")
+    @classmethod
+    def validate_name_recovery_passes(cls, value):
+        # Environment variables are strings; reject booleans and fractional
+        # values instead of silently coercing them into feature levels.
+        if type(value) is int:
+            return value
+        if isinstance(value, str) and value.strip() in {"0", "1", "2", "3"}:
+            return int(value.strip())
+        raise ValueError("NER_NAME_RECOVERY_PASSES must be an integer from 0 to 3")
 
     @field_validator("log_level", mode="before")
     @classmethod

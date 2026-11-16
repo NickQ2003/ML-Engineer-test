@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import threading
 
 import pytest
@@ -84,6 +85,46 @@ def test_cancelled_assembly_waits_until_thread_releases_resources(monkeypatch):
         return original(*args)
 
     monkeypatch.setattr(service, "_assemble", slow_assembly)
+
+    async def run():
+        task = asyncio.create_task(service.extract(None, []))
+        try:
+            assert await asyncio.to_thread(started.wait, 2)
+            task.cancel()
+            await asyncio.sleep(0.05)
+            assert not task.done()
+            finish.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            finish.set()
+
+    asyncio.run(run())
+
+
+def test_recovery_logs_counts_without_names(caplog):
+    span = PersonSpan("Alice Smith", 0, 11)
+    service = ExtractionService(FakeOCR(), FakeNER([[span]]), Settings(ner_name_recovery_passes=1))
+    with caplog.at_level(logging.INFO, logger="app.services.extraction_service"):
+        asyncio.run(service.extract(None, []))
+    assert "Name recovery: passes=1" in caplog.text and "Alice" not in caplog.text
+
+
+def test_cancelled_enabled_recovery_waits_for_the_assembly_thread(monkeypatch):
+    from app.services import extraction_service
+
+    started, finish = threading.Event(), threading.Event()
+    original = extraction_service.recover_names
+
+    def slow_recovery(*args, **kwargs):
+        started.set()
+        if not finish.wait(timeout=5):
+            raise RuntimeError("test did not release recovery")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(extraction_service, "recover_names", slow_recovery)
+    span = PersonSpan("Alice Smith", 0, 11)
+    service = ExtractionService(FakeOCR(), FakeNER([[span]]), Settings(ner_name_recovery_passes=1))
 
     async def run():
         task = asyncio.create_task(service.extract(None, []))

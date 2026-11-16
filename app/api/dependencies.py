@@ -6,6 +6,7 @@ from app.services.ner_async import NERService
 from app.services.ocr_service import OCRService
 from app.services.extraction_service import ExtractionService
 from app.core.config import get_settings
+from app.services.ingestion_service import IngestionService
 
 
 def get_ocr_service(request: Request) -> OCRService:
@@ -20,4 +21,11 @@ def get_ner_service(request: Request) -> NERService:
 
 def get_extraction_service(request: Request) -> ExtractionService:
     """Combine the lifespan-managed OCR and NER services for one request."""
-    return ExtractionService(get_ocr_service(request), get_ner_service(request), get_settings())
+    return ExtractionService(
+        get_ocr_service(request), get_ner_service(request), get_settings(),
+        preview_store=getattr(request.app.state, "extraction_preview_store", None),
+    )
+
+
+def get_ingestion_service(request: Request) -> IngestionService:
+    return request.app.state.ingestion_service

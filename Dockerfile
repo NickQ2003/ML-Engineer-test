@@ -22,8 +22,15 @@ RUN uv sync --locked --no-dev --no-install-project
 # Fail the build if the locked English model is absent or incompatible.
 RUN python -c "import spacy; assert 'ner' in spacy.load('en_core_web_sm').pipe_names"
 
+# The embedding revision is pinned and checked; runtime loading is local only.
+COPY app/core/embedding_model.py /tmp/embedding_model.py
+RUN HF_HUB_DISABLE_XET=1 python /tmp/embedding_model.py /opt/models/all-minilm-l6-v2
+
 COPY app ./app
-RUN useradd --create-home --uid 10001 appuser
+RUN useradd --create-home --uid 10001 appuser \
+    && mkdir -p /app/data/ingestion \
+    && chown appuser:appuser /app/data /app/data/ingestion \
+    && chmod 700 /app/data/ingestion
 USER appuser
 
 EXPOSE 8000

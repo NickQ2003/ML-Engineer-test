@@ -9,6 +9,7 @@ import sys
 import anyio
 
 from app.core.config import Settings, get_settings
+from app.core.worker_environment import worker_environment
 from app.models.extraction import PersonSpan
 from app.services.ner_protocol import MAX_NER_RESPONSE_BYTES
 from app.services.ner_service import (
@@ -46,7 +47,7 @@ async def _start_worker() -> asyncio.subprocess.Process:
         sys.executable, "-m", "app.services.ner_worker",
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL, start_new_session=True,
-        limit=MAX_NER_RESPONSE_BYTES,
+        limit=MAX_NER_RESPONSE_BYTES, env=worker_environment(),
     ))
     try:
         return await asyncio.shield(task)

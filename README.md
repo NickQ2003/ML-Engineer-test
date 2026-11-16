@@ -205,8 +205,9 @@ curl http://localhost:8000/health
 ```
 
 `GET /health` is a liveness check for the API, not a Qdrant readiness check.
-`POST /api/extract` is implemented; the ingestion and question-answering RAG
-endpoints and their Qdrant, embedding and LLM integrations remain pending.
+`POST /api/extract` and `POST /api/ingest` are implemented. `/api/ask` and its
+LLM integration remain pending. Recreate services with the new image only when
+you intend to upgrade: an already running container does not pick up these changes.
 
 The OCR component returns words with page-relative character offsets and boxes
 in PDF points, relative to the top-left of the **unrotated crop box**. It first
@@ -261,7 +262,7 @@ messages do not include document text.
 | `FUZZY_THRESHOLD` | 0.90 | Full-name matching threshold, finite and within `0..1`. |
 | `EXTRACT_MAX_IN_FLIGHT` | 2 | Maximum in-flight extraction requests per application process. |
 | `EXTRACT_UPLOAD_TIMEOUT_SECONDS` | 30 | Total body-read deadline. |
-| `MAX_EXTRACTED_NAMES` | 1000 | Maximum NER occurrences before location mapping. |
+| `MAX_EXTRACTED_NAMES` | 1000 | Maximum original NER occurrences plus recovered occurrences. |
 | `MAX_FUZZY_COMPARISONS` | 100000 | Maximum possible distinct extracted-name/query comparisons. |
 | `MAX_FUZZY_WORK_UNITS` | 100000000 | Maximum product of total normalized extracted-name and query lengths. |
 
@@ -275,6 +276,265 @@ excess requests are rejected without reading their body. Uploads have a deadline
 and the multipart parser limits the PDF and text fields incrementally. These
 controls are **not global** across HTTP workers or replicas. If a caller cancels,
 already-started OCR/NER work remains supervised under its own service limits.
+
+#### Optional recovery of repeated names
+
+`NER_NAME_RECOVERY_PASSES` is **0 by default**: recovery is bypassed and the
+existing response and order remain unchanged. The allowed integer levels are:
+
+| Level | Additional searches over the existing page-local OCR words |
+|---|---|
+| `0` | Disabled; no candidate search. |
+| `1` | Exact normalized names, ignoring case, accents and punctuation as in existing name normalization. |
+| `2` | Level 1 plus component-by-component fuzzy comparison: same component count and order; each changed component scores at least 0.80 and differs by at most one insertion, deletion or substitution. At most two components may differ; components of three or fewer characters match exactly. |
+| `3` | Levels 1 and 2 plus exact normalized text with spaces removed, for limited OCR word splitting/merging. The compact string must contain at least eight characters. |
+
+Only names already detected by NER **and safely located** are references; they
+must have 2–8 normalized components and no more than 512 source characters
+(or the lower `MAX_NAME_CHARS`). References are fixed before the search,
+so recovered candidates cannot recursively become references. Names never
+detected by NER, text absent from OCR and unsafe bounding boxes cannot be
+recovered. Search stays within each physical page and uses only its existing OCR
+word boxes; OCR and spaCy are not rerun. Candidates matching multiple distinct
+references or overlapping alternative candidates are conservatively omitted.
+Existing NER locations are protected. Standalone bullets or punctuation at the
+edges of a candidate are excluded, so they cannot create duplicate ambiguous
+windows for the same name. Recovered text is the OCR spelling, not a
+silently corrected name. With recovery enabled, output is ordered by page and
+page-local offsets; the public response schema is unchanged.
+
+The separate recovery component threshold is fixed at `0.80` and does not
+change `FUZZY_THRESHOLD`, which still controls matching against requested names.
+These rules can improve recall but can also produce false positives, including
+different people with identical normalized names; no accuracy guarantee is
+claimed. The API does not identify which individual locations were recovered.
+Application logs contain only aggregate counts, not names.
+
+Recovery has fixed per-document limits of 100,000 examined OCR windows,
+100,000 comparisons and 100,000,000 normalization/comparison work units across enabled passes.
+Over-budget requests return `413`, not partial results. One-word and long
+multi-component NER names remain valid original detections, but are not used as
+recovery references. Resource limits are per process and require calibration.
+
+For a real, isolated HTTP/OCR/NER comparison of all four levels and temporary PDF
+overlays for human review, build the current image and run:
+
+```bash
+docker build -t document-intelligence-name-recovery:local .
+SMOKE_IMAGE=document-intelligence-name-recovery:local bash scripts/smoke/recuperacion_nombres.sh
+```
+
+The script pauses while the four annotated copies can be opened and compared;
+press Enter or Ctrl-C to remove its own temporary files and containers. Use
+`--automatico` for a no-pause check. It uses a sample PDF and real services;
+unit tests use controlled NER omissions to test each rule deterministically.
+This is not an accuracy evaluation or human approval MT-002. The currently
+running Compose app does not pick up the new setting or code without a deliberate
+upgrade/recreation; the script does not touch existing Compose resources.
+The review of the previous implementation and remaining evaluation work is in
+[docs/REVISION_RECUPERACION.md](docs/REVISION_RECUPERACION.md).
+
+#### Optional preview for a future interface
+
+By default, `EXTRACT_PREVIEW_ENABLED=false`: no preview is retained and its
+endpoints return `404`. To opt in, configure it together with a private,
+random `EXTRACT_PREVIEW_TOKEN` of 32–256 printable non-space ASCII characters
+before starting the application. For example, generate a token with
+`python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`; keep it out of
+source control and logs. Environment variables can be inspected by privileged
+operators or through Docker inspection.
+
+When enabled, the service keeps **only the latest successful extraction** as an
+in-memory proxy of the original PDF plus immutable stage overlays: OCR word
+boxes, located NER spans, each enabled recovery pass and final results. These are
+JSON overlay data plus the original PDF, **not a built-in graphical UI or
+pre-rendered screenshots**. A future interface can render the PDF and draw the
+boxes; coordinates are PDF points relative to the top-left of the unrotated
+crop box, and physical page indices start at zero. `source` distinguishes
+`ocr`, `ner`, and `recovery_1`–`recovery_3`.
+
+Each valid multipart extraction invalidates the previous preview **before**
+processing starts, even if the new extraction later fails; malformed forms
+rejected earlier do not. A preview is published only after successful extraction,
+and is invalidated after 10 minutes or process shutdown. An older concurrent
+request cannot overwrite a newer preview. Old IDs return `404`; an already
+delivered or copied document cannot be revoked, and Python memory is not securely
+erased. No preview is stored in SQLite or a persistent volume. Existing upload
+and OCR workers may still use their normal temporary files during processing.
+
+The proxy is limited to 10 MiB, 25 pages, 5,000 OCR words, 2 MiB per stage and
+8 MiB total stage data. A larger or unrepresentable preview is skipped without
+failing extraction; the preview endpoint then returns `404`. Access requires
+`Authorization: Bearer <token>`:
+
+```text
+GET /api/extract/preview                         # ID and available stages
+GET /api/extract/preview/{id}/document           # temporary PDF proxy
+GET /api/extract/preview/{id}/stages/{stage}     # page-local JSON overlays
+```
+
+Responses use `Cache-Control: no-store`. The endpoints are deliberately omitted
+from OpenAPI and do not change the fixed extraction response. This is a
+**single trusted operator, single application process** development aid, not
+multi-tenant authentication or a globally shared store. A token holder can see
+the latest extraction from any client in that process. Multiple workers or
+replicas do not share previews or a global “latest” guarantee. Protect access
+with TLS/reverse-proxy controls when outside a trusted host; use a sandboxed PDF
+viewer and do not assume client downloads or caches can be erased remotely.
+
+To check the protected API and see temporary annotated PDFs for OCR, NER,
+recovery and final stages without changing existing Compose services:
+
+```bash
+docker build -t document-intelligence-stage-preview:local .
+SMOKE_IMAGE=document-intelligence-stage-preview:local bash scripts/smoke/vista_etapas.sh
+```
+
+The script uses only its own container with `--network none`, a synthetic test
+token and private temporary files. It verifies that a second extraction removes
+access to the old ID; the files are removed on Enter or Ctrl-C. This is not a
+replacement for human review or an evaluation of detection quality.
+
+### Ingestion API
+
+`POST /api/ingest` accepts exactly one `pdf_file` multipart part. It OCRs all
+physical pages, prepares whole-word fragments, embeds them locally, and confirms
+their storage in Qdrant before returning the fixed `IngestResponse`:
+
+```bash
+curl --fail --silent --show-error http://localhost:8000/api/ingest \
+  -F 'pdf_file=@sample_pdfs/meeting_minutes.pdf;type=application/pdf'
+# {"status":"success","chunks_stored":...}
+```
+
+The local `all-MiniLM-L6-v2` revision
+`1110a243fdf4706b3f48f1d95db1a4f5529b4d41` is provisioned during image build.
+Only SHA-256-verified, allowlisted artifacts are copied to a private runtime
+snapshot; extra files in a mounted model directory cannot alter the loader.
+Inference uses CPU without downloading models. One lazy, supervised worker
+reuses the model; preparation has a deadline and its private files are removed
+after controlled termination. A machine/container crash cannot guarantee cleanup.
+
+The initial fragment budget is **128 model tokens including special tokens**,
+with **up to 32 overlapping content tokens**, adjusted to whole words. These are
+a baseline, not a measured retrieval optimum. A single word that cannot fit or
+produces no model tokens is rejected rather than silently truncated. The model's
+`[UNK]` tokens are accepted: the original OCR text is retained in Qdrant, but
+unknown characters or words can lose meaning in their embeddings. Empty OCR
+pages produce no fragments but are recorded in SQLite with
+their original zero-based physical page number; this is not proof a page was
+visually blank. A document with no detected text returns `422` without points.
+
+Every request has new document/ingestion UUIDs, even for identical PDF bytes.
+The SHA-256 and processing signature in SQLite support future duplicate analysis;
+automatic deduplication is not implemented. Qdrant retains fragment text and a
+sanitized source filename, document/ingestion/chunk IDs, page and character
+positions, model identity and processing signature. No original PDF is retained
+permanently and document contents are not written to application logs. SQLite
+stores operational metadata and all page statuses, not OCR text.
+
+`INGEST_COLLECTION` is separate from the pre-existing `QDRANT_COLLECTION` setting.
+It must use cosine distance and 384-dimensional vectors. Qdrant 1.13.6 does not
+persist collection metadata, so a reserved manifest point binds the collection
+to the model revision, endpoint and SQLite ledger identity. An existing unmarked
+collection is **not adopted**, and incompatible/untagged data is refused, never
+deleted automatically. Interrupted creation can leave an unmarked collection;
+it must be inspected and resolved explicitly, not silently reused. The manifest
+is not a document fragment: future retrieval
+must filter `kind=chunk` and exclude incomplete ingestions using the ledger.
+
+The `ingestion_data` Compose volume persists SQLite and same-host POSIX locks;
+Qdrant persists in its separate `qdrant_data` volume. All application workers and
+maintenance commands must share the same local ledger volume. Network filesystems,
+multiple hosts, and independent writers bypassing these locks are not supported.
+Back up/restore SQLite and Qdrant together; losing only the ledger can orphan data.
+The ledger schema is versioned and incompatible files are refused without an
+automatic migration. The earlier development-only schema v1 is not migrated.
+
+| Variable | Default | Meaning |
+|---|---:|---|
+| `INGEST_COLLECTION` | `documents_minilm_1110a243_v1` | Dedicated owned collection, no automatic migration. |
+| `INGEST_MAX_IN_FLIGHT` | 1 | Per-process admitted ingestions, no additional upload queue. |
+| `INGEST_MAX_CHUNKS` | 1000 | Maximum for the **whole document**, not each page. |
+| `INGEST_MAX_PAGE_CHARS` / `INGEST_MAX_DOCUMENT_CHARS` | 100000 / 1000000 | Original OCR preparation limits. |
+| `INGEST_CHUNK_TOKENS` / `INGEST_OVERLAP_TOKENS` | 128 / 32 | Token budget and maximum overlap. |
+| `INGEST_UPLOAD_TIMEOUT_SECONDS` | 30 | Upload deadline; existing PDF/body/page/pixel bounds also apply. |
+| `INGEST_JOB_TIMEOUT_SECONDS` | 420 | Overall ingestion deadline, including OCR, embeddings and vector operations. |
+| `EMBEDDING_BATCH_SIZE` | 16 | Local inference batch size. |
+| `EMBEDDING_JOB_TIMEOUT_SECONDS` | 120 | Worker startup, chunking and inference deadline. |
+| `EMBEDDING_QUERY_MAX_TOKENS` | 256 | Separate budget for future queries, without silent truncation. |
+| `QDRANT_TIMEOUT_SECONDS` / `QDRANT_READ_RETRIES` | 10 / 2 | Operation deadline and bounded read-only retries. Writes are not blindly retried. |
+| `QDRANT_BATCH_SIZE` | 64 | Number of points per confirmed write. |
+
+`400` invalid PDF; `408` upload timeout; `413` size/page/fragment limit; `422`
+invalid form, no detected text or text that cannot be chunked; `503` dependency,
+collection ownership or admission failure; `504` OCR/embedding deadline.
+These are per-process bounds, not a production capacity guarantee. The embedding
+worker serializes inference; increasing HTTP admission alone does not increase
+embedding capacity. Deadlines trigger cancellation, but safe supervision and
+local cleanup can make a response or shutdown take longer. The wrapper
+`get_query_embedding()` is not an `/api/ask` API.
+
+#### Recovery and scoped cleanup
+
+SQLite and Qdrant do **not** share an atomic transaction. A failed attempt can
+leave fragments in `cleanup_pending`; a process crash can leave `processing` or
+`writing`. A timeout does not prove a remote write failed. Live operations hold
+an OS lock per ingestion, and writes/cleanup also share a collection lock.
+Maintenance never decides that a job is abandoned merely because it is old.
+
+For an upgraded, already running Compose app (the script does not restart it):
+
+```bash
+# Inventory up to 100 IDs: no deletion or claim that attempts are inactive.
+bash scripts/cleanup_ingest.sh --pending
+# Preview one exact ingestion from the operational log/ledger.
+bash scripts/cleanup_ingest.sh --id INGESTION_UUID
+# Delete only that eligible failed ingestion, preserving completed documents.
+bash scripts/cleanup_ingest.sh --id INGESTION_UUID --execute
+```
+
+An ambiguous write requires `--confirm-quiescent` **in addition** to `--execute`.
+Only use it after stopping writers and draining/restarting the relevant Qdrant
+instance so old writes cannot still arrive. A nonzero result means cleanup was
+refused or remains unconfirmed. Preview does not change ledger states. Execution
+can recover a dead local owner, verifies the collection/endpoint/model, deletes
+only the ingestion's exact filter, and marks `cleaned` only after observing zero
+matching points. It cannot protect against an unrelated writer bypassing locks
+or a false operator confirmation. Do not schedule the confirmation flag blindly.
+No automatic scheduler or Celery is configured.
+
+Outside Compose, run `python -m app.maintenance.cleanup_ingest` with the same
+configuration, user and ledger directory. New directories/files require `0700`/
+`0600`; existing unrelated, empty, insecure or incompatible files are refused,
+not overwritten or chmodded. A private lock file is never unlinked during normal
+operations. If first-time initialization itself is killed and leaves an empty
+file, inspect it before explicitly choosing a new path or removing that file.
+
+#### Isolated real ingestion verification
+
+```bash
+docker build -t document-intelligence-smoke:local .
+SMOKE_PACKAGED_APP=1 bash scripts/smoke/ingestion.sh
+```
+
+This check uses real Uvicorn, OCR, local embeddings, SQLite and Qdrant 1.13.6 on
+an **internal network with no host-published ports**, with new temporary volumes.
+It checks two PDFs, repeated content, empty physical pages and scoped cleanup,
+then recreates the test API/Qdrant to check persistence. The cleanup fixture is
+an explicitly synthetic partial-write record with a deliberately delayed write
+to real Qdrant, not a real server timeout. A client-side manifest failure is also
+injected to verify that an unmarked collection is not adopted. The check
+does not stop existing Compose containers or touch their data. It removes only
+its own resources; abrupt runner/Docker termination can prevent cleanup.
+`SMOKE_IMAGE` and `SMOKE_QDRANT_IMAGE` select already available local images.
+`SMOKE_PACKAGED_APP=1` tests the code packaged in the image; by default the
+current `app/` directory is mounted read-only for development.
+This is not a general retrieval-quality evaluation or human review MT-002.
+
+For a Spanish step-by-step walkthrough with a temporary Qdrant Dashboard,
+SQLite snapshot, sample queries and visual PDF comparisons, see
+[docs/GUIA_SMOKE_VISUAL.md](docs/GUIA_SMOKE_VISUAL.md).
 
 ### Person detection
 

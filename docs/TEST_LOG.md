@@ -1126,10 +1126,10 @@ without starting or restarting the existing Compose services.
 docker build -t document-intelligence-smoke:local .
 bash -n scripts/smoke/ejecutar.sh
 bash scripts/smoke/ejecutar.sh --help
-bash scripts/smoke/ejecutar.sh all
+bash scripts/smoke/ejecutar.sh todo
 ```
 
-**Result:** the image built and `all` passed. The component checks located 22
+**Result:** the image built and `todo` passed. The component checks located 22
 occurrences and omitted one span because its association was unsafe; they found
 one exact fuzzy pair for `Thomas Muller`. Over real HTTP, `/health` and valid
 cases returned `200`; invalid JSON returned `422`, non-PDF content `400`, and an
@@ -1137,7 +1137,7 @@ oversized `names` field `413`. An empty list did not prevent name extraction. On
 the synthetic cropped and rotated scan, the detected box center fell within the
 known position. Temporary containers were removed.
 
-`components` was also checked from an external directory using another local image
+`componentes` was also checked from an external directory using another local image
 through `SMOKE_IMAGE`; it passed. An unknown argument returned exit code `2`, and
 a missing image returned `1`. A controlled `SIGINT` interruption of `http`
 returned `130` and removed the temporary container it had created. The
@@ -1179,6 +1179,202 @@ revision was extracted with `git archive` in another offline container: at
 `b3b5bdf`, `test_bbox_and_fuzzy.py` passed its **17 tests**; at `673bc8b`, the
 bounding-box, configuration, contract, asynchronous OCR, and HTTP-limit tests
 passed **121 tests**. These suites include unit tests with simulated components.
+
+## 2026-11-16 — Milestone 4: ingestion, recovery and persistence
+
+**Environment:** macOS ARM64 with Docker Desktop; Python 3.12 in Linux ARM64
+containers, Qdrant 1.13.6 and the pinned local MiniLM model. The pre-existing
+Compose API and Qdrant were already running and were not recreated or stopped.
+
+### Offline unit and integration suite
+
+The temporary `document-intelligence-h4-tests:local` image was derived from an
+earlier build of this Dockerfile with `pytest==9.2.0` installed. The current
+application, tests and sample PDFs were mounted read-only; no network was
+available to the test container:
+
+```bash
+docker run --rm --network none \
+  -v "$PWD/app:/app/app:ro" -v "$PWD/tests:/tests:ro" \
+  -v "$PWD/sample_pdfs:/samples:ro" \
+  -e PYTHONPATH=/tmp/test-deps:/app -e SAMPLE_PDFS_DIR=/samples -e HF_HUB_OFFLINE=1 \
+  --entrypoint python document-intelligence-h4-tests:local \
+  -m pytest -p no:cacheprovider /tests/unit /tests/integration
+```
+
+**Observed result:** `collected 370 items` → **`370 passed in 50.01s`**. The
+suite includes simulated adapters and failure injection as well as real local
+OCR, the fixed embedding model and subprocess tests. It covers physical-page
+records, admission, repeated cancellation, an overall timeout during a
+simulated write, process death with persistent uncertainty, and cleanup guards.
+The real tokenizer emitted `[UNK]` for a document symbol and a 110-character
+word; the revised test confirms these are accepted while retaining original
+text. Their vector representation can still lose information.
+
+### Packaged-image smoke tests
+
+```bash
+docker build -t document-intelligence-h4-model:local .
+SMOKE_IMAGE=document-intelligence-h4-model:local SMOKE_PACKAGED_APP=1 \
+  bash scripts/smoke/ingestion.sh
+SMOKE_IMAGE=document-intelligence-h4-model:local SMOKE_PACKAGED_APP=1 \
+  bash scripts/smoke/ejecutar.sh todo
+```
+
+**Observed result:** the image built successfully. Both smoke scripts passed
+using the code packaged in that image rather than a mounted `app/` directory.
+The isolated ingestion test used real Uvicorn HTTP, OCR, embeddings, SQLite
+and Qdrant: two sample PDFs were stored, the repeated PDF produced distinct
+identities with the same input hash, and a synthetic scan retained its empty
+first page without points for that page. Invalid PDF and no detected text
+returned `400` and `422`, respectively. Completed IDs and points survived
+recreation of only the test API and Qdrant using their test volumes.
+
+The real cleanup CLI inventoried and removed a synthetic partial attempt while
+preserving completed attempts. Preview, active-owner and completed-attempt
+guards were checked. The partial record and a deliberately delayed point write
+to real Qdrant simulated an ambiguous timeout; the point arrived after the first
+preview, and cleanup without explicit quiescence confirmation remained refused.
+No actual Qdrant server timeout or uncontrolled late network request was
+induced. Separately, injected client failures before and after a real manifest
+write checked refusal of an unmarked collection and revalidation of a matching
+manifest. Untagged points, another ledger identity and an incompatible vector
+dimension were refused. The extraction component and real-loopback HTTP checks
+also passed, including the synthetic cropped and rotated scan.
+
+The smoke tests used no published host ports. Their temporary containers,
+networks and volumes were removed; the locally built test images were retained.
+The original Compose containers remained running with the same container IDs.
+`docker compose config --quiet`, shell syntax checks and `git diff --check`
+passed. The running Compose API still uses its previous image and has not been
+upgraded to this implementation.
+
+**Limitations:** SQLite/Qdrant operations are not atomic, and an unknown write
+can arrive late; quiescence remains an explicit operational responsibility.
+The checks do not establish retrieval accuracy, production capacity or Linux
+x86_64 behavior. `/api/ask`, Celery and the UI are outside this milestone;
+human visual review MT-002 remains pending.
+
+## 2026-11-16 — Interactive visual ingestion walkthrough
+
+**Environment:** Docker Desktop on macOS ARM64, using the packaged
+`document-intelligence-h4-model:local` image and Qdrant 1.13.6. The walkthrough
+uses its own bridge network and two temporary volumes; API and dashboard ports
+are published only on `127.0.0.1`.
+
+```bash
+SMOKE_IMAGE=document-intelligence-h4-model:local \
+  bash scripts/smoke/recorrido_visual.sh --automatico
+```
+
+**Observed result:** all five stages passed. The example PDF produced four
+fragments on two physical pages; a second ingestion retained the hash but had new
+IDs. The real Qdrant point contained 384 dimensions and scored approximately 1
+when queried with its own vector. A synthetic two-page scan recorded no text or
+points on its first page. A consistent, standalone SQLite snapshot contained
+three completed ingestions and the empty-page record.
+
+The interactive pauses were also exercised with a pseudoterminal. During the
+pauses an invalid PDF returned `400`, real Qdrant count and point-ID query
+requests succeeded, and macOS SQLite opened the snapshot read-only and passed
+`integrity_check`. The synthetic PDF and snapshot existed during the pauses and
+were removed on exit. A separate controlled `SIGINT` exited `130` and ran the
+cleanup. The dashboard HTTP route responded; an actual browser or DB Browser GUI
+was not operated during this automated check.
+
+**Issues and fixes:** Docker Desktop did not publish ports on the original
+`--internal` network, so the visual walkthrough uses a separate bridge network
+with loopback-only published ports. A point-ID similarity query excluded its
+reference point, so the self-similarity check uses the stored vector. A snapshot
+initially opened in the container but failed to open read-only on the host; the
+backup is now converted to standalone `DELETE` journal mode and was rechecked
+from macOS. No existing Compose container or volume was restarted or changed.
+The walkthrough does not establish retrieval accuracy or replace MT-002.
+
+## 2026-11-16 — Optional repeated-name recovery
+
+**Environment:** Docker Desktop on macOS ARM64, Linux ARM64 containers with real
+OCR, spaCy NER, Uvicorn HTTP, and the packaged `document-intelligence-name-recovery:local`
+image. The existing Compose services were not restarted or modified.
+
+The opt-in feature uses `NER_NAME_RECOVERY_PASSES=0..3`, with 0 as default.
+Dedicated tests cover exact recovery, one-edit fuzzy recovery, compact OCR
+segmentation, ambiguity rejection, cross-page matches, limits, cancellation,
+and preservation of NER locations. Controlled NER omissions are explicitly
+simulated fixtures; real HTTP checks use actual OCR and NER.
+
+```bash
+SMOKE_IMAGE=document-intelligence-name-recovery:local   bash scripts/smoke/recuperacion_nombres.sh --automatico
+SMOKE_IMAGE=document-intelligence-name-recovery:local SMOKE_PACKAGED_APP=1   bash scripts/smoke/ejecutar.sh todo
+SMOKE_IMAGE=document-intelligence-name-recovery:local SMOKE_PACKAGED_APP=1   bash scripts/smoke/ingestion.sh
+```
+
+**Observed result:** 421 unit and integration tests passed in 49.30s.
+The real HTTP comparison produced 22 baseline name locations and 23 locations
+at levels 1, 2 and 3, with original boxes retained. The four generated PDF
+copies were readable and had red-overlay counts [12, 10] at level 0 and
+[13, 10] at levels 1–3. The interactive pause preserved artifacts for
+inspection and cleanup succeeded both after Enter and Ctrl-C. Packaged
+extraction and ingestion smoke tests passed.
+
+**Limitations:** these results do not establish precision/recall or human
+approval of the recovered location. The exact visual case initially reported
+by the user was not independently identified from supplied observations;
+MT-002 remains pending. Long names, ambiguous fuzzy candidates and missing
+OCR text are conservatively not recovered.
+
+## 2026-11-16 — Component matching and temporary stage preview
+
+**Environment:** Docker Desktop on macOS ARM64; Linux ARM64 containers using the
+packaged `document-intelligence-stage-preview:local` image. Existing Compose
+containers and volumes were not restarted or modified.
+
+**Review and diagnosis:** real OCR of the sample found three occurrences of
+the name investigated by the user. The previous implementation located one with
+NER and recovered only one more: a standalone bullet created two overlapping,
+equivalent normalized windows for the remaining occurrence, which were rejected
+as ambiguous. The diagnosis and a provisional engineering assessment, not an
+accuracy score, are recorded in [REVISION_RECUPERACION.md](REVISION_RECUPERACION.md).
+
+**Changes:** exclude standalone punctuation at candidate boundaries and compare
+full names component by component at recovery level 2; both name and surname
+remain required. Add an opt-in, authenticated, single-process in-memory preview
+of the latest extraction with the original PDF proxy and stage overlays. It is
+disabled by default, expires after ten minutes, and is invalidated by the next
+accepted extraction. Existing extraction and ingestion schemas are unchanged.
+
+```bash
+SMOKE_IMAGE=document-intelligence-stage-preview:local \
+  bash scripts/smoke/recuperacion_nombres.sh --automatico
+SMOKE_IMAGE=document-intelligence-stage-preview:local \
+  bash scripts/smoke/vista_etapas.sh --automatico
+SMOKE_IMAGE=document-intelligence-stage-preview:local SMOKE_PACKAGED_APP=1 \
+  bash scripts/smoke/ejecutar.sh todo
+SMOKE_IMAGE=document-intelligence-stage-preview:local SMOKE_PACKAGED_APP=1 \
+  bash scripts/smoke/ingestion.sh
+```
+
+**Observed result:** 441 unit and integration tests passed in 51.02 seconds.
+The real sample comparison retained 22 NER boxes and returned 24 at recovery
+levels 1–3; the real OCR/spaCy regression found all three occurrences of the
+investigated name. The preview smoke checked authentication, stage data, the PDF
+proxy and invalidation of the old ID after a different extraction. An interactive
+pseudoterminal check confirmed that the OCR, NER, recovery and final PDF overlays
+were readable while paused and removed on exit. Extraction and ingestion smoke
+tests passed with the packaged image. The ingestion cleanup timeout/late-write
+fixtures remain simulated, as described in the earlier milestone entry.
+
+**Issue fixed during verification:** the preview smoke initially interpreted
+HTTP header names case-sensitively and incorrectly reported a successful
+authenticated response as a failure. The verifier now uses the HTTP header
+object's case-insensitive lookup; the repeated smoke passed.
+
+**Limitations:** the preview is a bounded development aid for one trusted
+operator and one process, not multi-tenant authentication or a shared UI store.
+It is available only after a successful extraction; downloaded copies cannot be
+revoked or securely erased. OCR, NER and matching quality require a representative
+annotated evaluation; a higher count does not prove precision. MT-002 remains
+pending human review.
 
 ## Template for future runs
 

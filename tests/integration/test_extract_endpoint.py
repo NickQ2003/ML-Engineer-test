@@ -88,6 +88,82 @@ def test_endpoint_processes_each_page_with_one_ocr_and_distinct_locations(monkey
     assert (ocr.calls, ner.calls) == (1, 1)
 
 
+def test_disabled_name_recovery_is_identical_and_never_called(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Disabled recovery must not be called")
+    monkeypatch.setattr("app.services.extraction_service.recover_names", forbidden)
+    monkeypatch.delenv("NER_NAME_RECOVERY_PASSES", raising=False)
+    default, _, _ = make_app(monkeypatch, Settings())
+    explicit, _, _ = make_app(monkeypatch, Settings(ner_name_recovery_passes=0))
+    with TestClient(default) as first, TestClient(explicit) as second:
+        baseline = first.post("/api/extract", files=fields())
+        disabled = second.post("/api/extract", files=fields())
+    assert baseline.status_code == disabled.status_code == 200
+    assert baseline.content == disabled.content
+
+
+@pytest.mark.parametrize("level", [1, 2, 3])
+def test_recovery_finds_ocr_occurrence_missed_by_ner_without_rerunning_either(monkeypatch, level):
+    class MissingSecondNER(FakeNER):
+        async def detect_pages(self, pages):
+            self.calls += 1
+            return [[PersonSpan("Alice Smith", 0, 11)], []]
+
+    ocr, ner = FakeOCR(), MissingSecondNER()
+    app, _, _ = make_app(monkeypatch, Settings(ner_name_recovery_passes=level), ocr=ocr, ner=ner)
+    with TestClient(app) as client:
+        response = client.post("/api/extract", files=fields())
+    assert response.status_code == 200
+    found = response.json()["extracted_names"]
+    assert [(item["name"], item["bounding_box"]["page_number"]) for item in found] == [
+        ("Alice Smith", 0), ("Alice Smith", 1),
+    ]
+    assert all(item["bounding_box"]["width"] == 60 for item in found)
+    assert ocr.calls == ner.calls == 1
+
+
+def test_recovery_limit_is_mapped_to_413_without_partial_results(monkeypatch):
+    class MissingSecondNER(FakeNER):
+        async def detect_pages(self, pages):
+            self.calls += 1
+            return [[PersonSpan("Alice Smith", 0, 11)], []]
+
+    app, _, _ = make_app(monkeypatch, Settings(ner_name_recovery_passes=1, max_extracted_names=1), ner=MissingSecondNER())
+    with TestClient(app) as client:
+        response = client.post("/api/extract", files=fields())
+    assert response.status_code == 413 and "Alice" not in response.text
+
+
+@pytest.mark.parametrize("threshold,expected_matches", [
+    (0.90, {"Alice Smith", "Alice Smitx"}), (1.0, {"Alice Smith"}),
+])
+def test_recovery_is_independent_of_query_threshold_and_preserves_schema(monkeypatch, threshold, expected_matches):
+    class VariantOCR(FakeOCR):
+        async def extract_stream_async(self, stream):
+            self.calls += 1
+            text = "Alice Smith Alice Smitx"
+            words = (
+                OCRWord("Alice", WordBox(10, 20, 20, 10), 0, 5, 1, 1, 1, 90),
+                OCRWord("Smith", WordBox(35, 20, 20, 10), 6, 11, 1, 1, 1, 90),
+                OCRWord("Alice", WordBox(90, 20, 20, 10), 12, 17, 1, 1, 1, 90),
+                OCRWord("Smitx", WordBox(115, 20, 20, 10), 18, 23, 1, 1, 1, 90),
+            )
+            return OCRDocument((OCRPage(0, 300, 200, text, words),))
+
+    class FirstNER(FakeNER):
+        async def detect_pages(self, pages):
+            self.calls += 1
+            return [[PersonSpan("Alice Smith", 0, 11)]]
+
+    app, _, _ = make_app(monkeypatch, Settings(ner_name_recovery_passes=2, fuzzy_threshold=threshold),
+                         ocr=VariantOCR(), ner=FirstNER())
+    with TestClient(app) as client:
+        result = client.post("/api/extract", files=fields()).json()
+    assert set(result) == {"extracted_names", "fuzzy_matches"}
+    assert [item["name"] for item in result["extracted_names"]] == ["Alice Smith", "Alice Smitx"]
+    assert {item["extracted_name"] for item in result["fuzzy_matches"]} == expected_matches
+
+
 def test_openapi_documents_the_actual_multipart_contract(monkeypatch):
     app, _, _ = make_app(monkeypatch)
     request = app.openapi()["paths"]["/api/extract"]["post"]["requestBody"]

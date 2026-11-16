@@ -56,16 +56,18 @@ class ExtractionBodyLimitMiddleware:
     def __init__(
         self, app: ASGIApp, max_request_bytes: int,
         max_in_flight: int = 2, upload_timeout_seconds: float = 30.0,
+        path: str = "/api/extract",
     ) -> None:
         if max_request_bytes <= 0 or max_in_flight <= 0 or upload_timeout_seconds <= 0:
             raise ValueError("Request limits must be positive")
         self.app = app
         self.max_request_bytes = max_request_bytes
         self.upload_timeout_seconds = upload_timeout_seconds
+        self.path = path
         self._admission = anyio.Semaphore(max_in_flight)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or scope["method"] != "POST" or _route_path(scope) != "/api/extract":
+        if scope["type"] != "http" or scope["method"] != "POST" or _route_path(scope) != self.path:
             await self.app(scope, receive, send)
             return
 
@@ -78,7 +80,7 @@ class ExtractionBodyLimitMiddleware:
         try:
             self._admission.acquire_nowait()
         except anyio.WouldBlock:
-            await JSONResponse({"detail": "Extraction capacity is full"}, status_code=503,
+            await JSONResponse({"detail": "Document processing capacity is full"}, status_code=503,
                                headers={"Retry-After": "1"})(scope, receive, send)
             return
 

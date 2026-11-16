@@ -5,6 +5,7 @@ set -euo pipefail
 SMOKE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SMOKE_DIR/../.." && pwd)"
 IMAGE="${SMOKE_IMAGE:-document-intelligence-smoke:local}"
+PACKAGED_APP="${SMOKE_PACKAGED_APP:-0}"
 CONTAINER=""
 CLIENT_PID=""
 
@@ -19,6 +20,8 @@ if [ "$#" -ne 1 ]; then
 fi
 case "$1" in
   components|http|all) MODE="$1" ;;
+  componentes) MODE=components ;;
+  todo) MODE=all ;;
   -h|--help) usage; exit 0 ;;
   *) usage >&2; exit 2 ;;
 esac
@@ -40,6 +43,10 @@ fi
 if [ ! -f "$ROOT/sample_pdfs/meeting_minutes.pdf" ]; then
   echo "sample_pdfs/meeting_minutes.pdf is missing from the repository." >&2
   exit 1
+fi
+if [ "$PACKAGED_APP" != 0 ] && [ "$PACKAGED_APP" != 1 ]; then
+  echo "SMOKE_PACKAGED_APP must be 0 or 1" >&2
+  exit 2
 fi
 
 cleanup() {
@@ -68,9 +75,10 @@ trap 'exit 143' TERM
 
 components() {
   echo "=== Real components: OCR → NER → bounding boxes → fuzzy matching ==="
-  echo "Temporary container without network access; code, scripts, and PDFs mounted read-only."
-  docker run --rm --network none \
-    -v "$ROOT/app:/app/app:ro" \
+  echo "Temporary container without network access; scripts and PDFs mounted read-only."
+  local -a args=(run --rm --network none)
+  if [ "$PACKAGED_APP" = 0 ]; then args+=(-v "$ROOT/app:/app/app:ro"); fi
+  docker "${args[@]}" \
     -v "$ROOT/sample_pdfs:/samples:ro" \
     -v "$SMOKE_DIR:/smoke:ro" \
     -e PYTHONPATH=/app --entrypoint python "$IMAGE" -u /smoke/verificar_componentes.py
@@ -79,8 +87,9 @@ components() {
 http() {
   echo "=== Real HTTP: Uvicorn → endpoint → OCR → NER → bounding boxes → fuzzy matching ==="
   echo "Starting a temporary API without external network access or host-published ports..."
-  CONTAINER="$(docker run --rm -d --network none \
-    -v "$ROOT/app:/app/app:ro" \
+  local -a args=(run --rm -d --network none)
+  if [ "$PACKAGED_APP" = 0 ]; then args+=(-v "$ROOT/app:/app/app:ro"); fi
+  CONTAINER="$(docker "${args[@]}" \
     -v "$ROOT/sample_pdfs:/samples:ro" \
     -v "$SMOKE_DIR:/smoke:ro" \
     -e PYTHONPATH=/app --entrypoint uvicorn "$IMAGE" \
