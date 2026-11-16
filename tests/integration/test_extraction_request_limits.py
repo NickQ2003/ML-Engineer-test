@@ -18,7 +18,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
 from app.core.config import Settings
 from app.core.request_limits import ExtractionBodyLimitMiddleware, _RequestBodyTooLarge
-from app.main import app as actual_app
+from app.main import app as actual_app, lifespan
 from app.services.extraction_input import InvalidNamesError, NamesLimitError, parse_names
 
 
@@ -316,17 +316,18 @@ def test_body_count_is_independent_for_concurrent_requests():
     assert app.state.endpoint_calls == 5
 
 
-def test_body_guard_is_installed_on_actual_app_but_endpoint_is_not_implemented():
+def test_body_guard_is_installed_on_actual_app():
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=actual_app), base_url="http://test") as client:
-            health = await client.get("/health")
-            missing = await client.post("/api/extract", content=b"")
-            oversized = await client.post("/api/extract", headers={"Content-Length": "999999999"})
+        async with lifespan(actual_app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=actual_app), base_url="http://test") as client:
+                health = await client.get("/health")
+                missing = await client.post("/api/extract", content=b"")
+                oversized = await client.post("/api/extract", headers={"Content-Length": "999999999"})
         return health, missing, oversized
 
     health, missing, oversized = asyncio.run(run())
     assert health.status_code == 200
-    assert missing.status_code == 404
+    assert missing.status_code == 422
     assert oversized.status_code == 413
 
 

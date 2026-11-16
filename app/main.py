@@ -31,7 +31,11 @@ async def lifespan(application: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
-app.add_middleware(ExtractionBodyLimitMiddleware, max_request_bytes=settings.max_request_bytes)
+app.add_middleware(
+    ExtractionBodyLimitMiddleware, max_request_bytes=settings.max_request_bytes,
+    max_in_flight=settings.extract_max_in_flight,
+    upload_timeout_seconds=settings.extract_upload_timeout_seconds,
+)
 
 app.include_router(extract_router, prefix="/api", tags=["extraction"])
 app.include_router(rag_router, prefix="/api", tags=["rag"])
