@@ -46,3 +46,26 @@ def test_fuzzy_threshold_accepts_inclusive_bounds(value):
 def test_fuzzy_threshold_rejects_invalid_values(value):
     with pytest.raises(ValidationError):
         Settings(fuzzy_threshold=value)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("extract_max_in_flight", 0), ("extract_upload_timeout_seconds", 0),
+    ("extract_upload_timeout_seconds", float("inf")), ("max_extracted_names", 0),
+    ("max_fuzzy_comparisons", -1), ("max_name_chars", 0), ("max_fuzzy_work_units", 0),
+])
+def test_extraction_flow_limits_are_validated(field, value):
+    with pytest.raises(ValidationError):
+        Settings(**{field: value})
+
+
+def test_extraction_flow_limits_can_be_set_from_environment(monkeypatch):
+    monkeypatch.setenv("EXTRACT_MAX_IN_FLIGHT", "3")
+    monkeypatch.setenv("EXTRACT_UPLOAD_TIMEOUT_SECONDS", "15")
+    monkeypatch.setenv("MAX_EXTRACTED_NAMES", "40")
+    monkeypatch.setenv("MAX_FUZZY_COMPARISONS", "200")
+    monkeypatch.setenv("MAX_NAME_CHARS", "50")
+    monkeypatch.setenv("MAX_FUZZY_WORK_UNITS", "4000")
+    settings = Settings()
+    assert (settings.extract_max_in_flight, settings.extract_upload_timeout_seconds) == (3, 15)
+    assert (settings.max_extracted_names, settings.max_fuzzy_comparisons) == (40, 200)
+    assert (settings.max_name_chars, settings.max_fuzzy_work_units) == (50, 4000)

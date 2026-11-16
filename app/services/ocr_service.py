@@ -41,6 +41,10 @@ class PDFPageTooLargeError(InvalidPDFError):
     """A page exceeds the configured rendered-pixel limit."""
 
 
+class PDFPageCountError(InvalidPDFError):
+    """The document exceeds the configured number of pages."""
+
+
 class OCRProcessingError(RuntimeError):
     """A page could not be rendered or processed by the OCR engine."""
 
@@ -241,6 +245,7 @@ class OCRService:
                     "InvalidPDFError": InvalidPDFError,
                     "PDFTooLargeError": PDFTooLargeError,
                     "PDFPageTooLargeError": PDFPageTooLargeError,
+                    "PDFPageCountError": PDFPageCountError,
                     "OCRProcessingError": OCRProcessingError,
                     "FileNotFoundError": FileNotFoundError,
                 }.get(response["type"], OCRProcessingError)
@@ -276,7 +281,7 @@ class OCRService:
             if document.page_count == 0:
                 raise InvalidPDFError("The PDF contains no pages")
             if document.page_count > self.settings.max_pdf_pages:
-                raise InvalidPDFError("The PDF exceeds the configured page limit")
+                raise PDFPageCountError("The PDF exceeds the configured page limit")
 
             pages = tuple(self._extract_page(page) for page in document)
             return OCRDocument(pages=pages)

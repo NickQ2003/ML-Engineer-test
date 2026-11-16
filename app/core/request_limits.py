@@ -1,4 +1,8 @@
-"""Limit bytes delivered to the extraction route before multipart parsing."""
+"""Bound extraction uploads before multipart parsing."""
+
+import asyncio
+
+import anyio
 
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -11,6 +15,10 @@ class _RequestBodyTooLarge(BaseException):
     BaseException. Only this middleware catches this private control signal;
     cancellations and all other errors continue to propagate normally.
     """
+
+
+class _RequestUploadTimeout(BaseException):
+    """Unwind the multipart parser when the upload deadline expires."""
 
 
 def _route_path(scope: Scope) -> str:
@@ -45,11 +53,16 @@ class ExtractionBodyLimitMiddleware:
     response already sent cannot be replaced if a later read exceeds the limit.
     """
 
-    def __init__(self, app: ASGIApp, max_request_bytes: int) -> None:
-        if max_request_bytes <= 0:
-            raise ValueError("max_request_bytes must be positive")
+    def __init__(
+        self, app: ASGIApp, max_request_bytes: int,
+        max_in_flight: int = 2, upload_timeout_seconds: float = 30.0,
+    ) -> None:
+        if max_request_bytes <= 0 or max_in_flight <= 0 or upload_timeout_seconds <= 0:
+            raise ValueError("Request limits must be positive")
         self.app = app
         self.max_request_bytes = max_request_bytes
+        self.upload_timeout_seconds = upload_timeout_seconds
+        self._admission = anyio.Semaphore(max_in_flight)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or scope["method"] != "POST" or _route_path(scope) != "/api/extract":
@@ -62,16 +75,32 @@ class ExtractionBodyLimitMiddleware:
             await JSONResponse({"detail": detail}, status_code=status)(scope, receive, send)
             return
 
+        try:
+            self._admission.acquire_nowait()
+        except anyio.WouldBlock:
+            await JSONResponse({"detail": "Extraction capacity is full"}, status_code=503,
+                               headers={"Retry-After": "1"})(scope, receive, send)
+            return
+
         size = 0
         response_started = False
+        body_complete = False
+        deadline = asyncio.get_running_loop().time() + self.upload_timeout_seconds
 
         async def limited_receive() -> Message:
-            nonlocal size
-            message = await receive()
+            nonlocal size, body_complete
+            if body_complete:
+                return await receive()
+            try:
+                async with asyncio.timeout_at(deadline):
+                    message = await receive()
+            except TimeoutError:
+                raise _RequestUploadTimeout() from None
             if message["type"] == "http.request":
                 size += len(message.get("body", b""))
                 if size > self.max_request_bytes:
                     raise _RequestBodyTooLarge()
+                body_complete = not message.get("more_body", False)
             return message
 
         async def tracked_send(message: Message) -> None:
@@ -87,3 +116,9 @@ class ExtractionBodyLimitMiddleware:
                 # Abort instead of sending a second, invalid response.
                 raise
             await JSONResponse({"detail": "Request body too large"}, status_code=413)(scope, receive, send)
+        except _RequestUploadTimeout:
+            if response_started:
+                raise
+            await JSONResponse({"detail": "Upload timed out"}, status_code=408)(scope, receive, send)
+        finally:
+            self._admission.release()

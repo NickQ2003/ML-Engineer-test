@@ -13,6 +13,7 @@ from app.services.ocr_service import (
     OCRDocumentTimeoutError,
     OCRService,
     OCRUploadTimeoutError,
+    PDFPageCountError,
     PDFTooLargeError,
     _start_worker,
 )
@@ -76,6 +77,25 @@ def test_async_worker_propagates_pdf_validation_errors():
         try:
             with pytest.raises(InvalidPDFError):
                 await service.extract_async(b"not a PDF")
+        finally:
+            await service.aclose()
+
+    asyncio.run(run())
+
+
+def test_async_worker_preserves_page_count_limit_error():
+    import pymupdf
+
+    with pymupdf.open() as document:
+        document.new_page()
+        document.new_page()
+        data = document.tobytes()
+
+    async def run():
+        service = OCRService(Settings(max_pdf_pages=1))
+        try:
+            with pytest.raises(PDFPageCountError):
+                await service.extract_async(data)
         finally:
             await service.aclose()
 

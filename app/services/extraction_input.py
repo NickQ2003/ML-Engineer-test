@@ -53,6 +53,8 @@ def parse_names(value: str, settings: Settings) -> list[NamePair]:
         raise InvalidNamesError("Invalid names field") from None
     if any(not pair.first_name.strip() or not pair.last_name.strip() for pair in names):
         raise InvalidNamesError("Invalid names field")
+    if any(len(pair.first_name) > settings.max_name_chars or len(pair.last_name) > settings.max_name_chars for pair in names):
+        raise NamesLimitError("A name exceeds the configured character limit")
     try:
         for pair in names:
             pair.first_name.encode("utf-8")

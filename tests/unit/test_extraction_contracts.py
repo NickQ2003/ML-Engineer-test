@@ -71,6 +71,13 @@ def test_names_count_limit_is_inclusive_and_does_not_truncate():
         parse_names(value, Settings(max_names_count=1))
 
 
+def test_each_name_component_has_an_inclusive_character_limit():
+    value = '[{"first_name":"Alice","last_name":"Li"}]'
+    assert len(parse_names(value, Settings(max_name_chars=5))) == 1
+    with pytest.raises(NamesLimitError):
+        parse_names(value, Settings(max_name_chars=4))
+
+
 def test_names_reject_deeply_nested_json_safely():
     with pytest.raises(InvalidNamesError):
         parse_names("[" * 2000 + "]" * 2000, Settings())
