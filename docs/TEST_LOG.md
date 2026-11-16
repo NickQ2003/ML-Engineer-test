@@ -1,22 +1,22 @@
-# Bitácora de pruebas y ejecuciones
+# Test and Execution Log
 
-Este documento versionado registra las comprobaciones realizadas durante el
-desarrollo, sus resultados y la resolución de problemas. Las salidas mostradas
-son fragmentos relevantes, no necesariamente la salida completa. Los valores de
-tiempo, tamaño o identificadores pueden cambiar entre ejecuciones.
+This version-controlled document records the checks performed during
+development, their results, and troubleshooting. The outputs shown are relevant
+excerpts, not necessarily the complete output. Timing, size, and identifier
+values may vary between runs.
 
-Al añadir una entrada, registrar fecha, entorno, comando, salida observada,
-resultado, limitaciones y, cuando exista un error, su diagnóstico y resolución.
-No incluir claves, credenciales, datos personales ni contenido sensible de PDF.
+When adding an entry, record the date, environment, command, observed output,
+result, and limitations and, if an error occurred, its diagnosis and resolution.
+Do not include keys, credentials, personal data, or sensitive PDF content.
 
-## 2026-11-14 — Hito 1: infraestructura inicial
+## 2026-11-14 — Milestone 1: Initial Infrastructure
 
-**Entorno:** macOS ARM64, Docker Desktop con contenedores Linux ARM64, Python
-3.12 en el contenedor. Las pruebas locales de Python se ejecutaron en un entorno
-temporal con Python 3.12.16. El motor Docker reportó versión 28.3.3 y Compose
-versión 2.39.2. El proyecto se encuentra en la rama de desarrollo.
+**Environment:** macOS ARM64, Docker Desktop with Linux ARM64 containers, Python
+3.12 in the container. Local Python tests ran in a temporary environment with
+Python 3.12.16. The Docker engine reported version 28.3.3 and Compose version
+2.39.2. The project is on the development branch.
 
-### Configuración y arranque de contenedores
+### Configuration and Container Startup
 
 ```bash
 docker compose config
@@ -24,137 +24,138 @@ docker compose up --build -d
 docker compose ps
 ```
 
-**Resultado observado:** Compose procesó la configuración y construyó la imagen;
-`app` y `qdrant` aparecieron con estado `Up`. Se creó el volumen
-`ml-engineer-test_qdrant_data`. La comprobación del archivo de configuración no
-garantiza por sí sola que los servicios estén listos para aceptar solicitudes.
+**Observed result:** Compose processed the configuration and built the image;
+`app` and `qdrant` appeared with status `Up`. The
+`ml-engineer-test_qdrant_data` volume was created. Checking the configuration
+file alone does not guarantee that the services are ready to accept requests.
 
-### Salud de la API
+### API Health
 
 ```bash
 curl --fail --silent --show-error http://localhost:8000/health
 ```
 
-**Respuesta observada:**
+**Observed response:**
 
 ```json
 {"status":"ok"}
 ```
 
-**Resultado:** correcto. Esta ruta es una comprobación de vida de la API; no
-comprueba la conexión de la aplicación con Qdrant ni con un LLM.
+**Result:** Passed. This route is an API liveness check; it does not verify the
+application's connection to Qdrant or an LLM.
 
-### Disponibilidad de Qdrant desde la red interna
+### Qdrant Availability from the Internal Network
 
 ```bash
 docker compose exec -T app python -c \
   "import urllib.request; print(urllib.request.urlopen('http://qdrant:6333/readyz', timeout=5).read().decode())"
 ```
 
-**Respuesta observada:**
+**Observed response:**
 
 ```text
 all shards are ready
 ```
 
-**Resultado:** correcto para conectividad de red y disponibilidad de Qdrant.
-No verifica todavía el adaptador de la aplicación ni la persistencia de datos.
+**Result:** Passed for network connectivity and Qdrant availability. It does not
+yet verify the application adapter or data persistence.
 
-### Pruebas unitarias iniciales en macOS
+### Initial Unit Tests on macOS
 
-Se ejecutaron en un entorno temporal con las dependencias mínimas de prueba,
-no con todas las dependencias del proyecto:
+They ran in a temporary environment with the minimum test dependencies, not
+with all project dependencies:
 
 ```bash
 python -m pytest tests/unit
 ```
 
-**Salida relevante observada:**
+**Relevant observed output:**
 
 ```text
 2 passed, 1 warning
 StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
 ```
 
-**Resultado:** las pruebas pasaron, con una advertencia de compatibilidad de
-Starlette. No se aplicó una corrección específica a esa advertencia. En la
-ejecución posterior dentro de Linux con las dependencias de la imagen no apareció;
-esos entornos no tenían exactamente el mismo conjunto de dependencias.
+**Result:** The tests passed with a Starlette compatibility warning. No specific
+fix was applied for that warning. It did not appear in the subsequent Linux run
+with the image dependencies; those environments did not have exactly the same
+set of dependencies.
 
-### Incidencia: imagen demasiado grande por CUDA
+### Issue: Oversized Image Due to CUDA
 
-En la primera construcción se detectaron paquetes CUDA/NVIDIA en la salida de
-`uv sync`. La construcción terminó correctamente, pero el tamaño era excesivo
-para el alcance CPU del proyecto:
+CUDA/NVIDIA packages were detected in the `uv sync` output during the first
+build. The build completed successfully, but the size was excessive for the
+project's CPU scope:
 
 ```bash
 docker image inspect ml-engineer-test-app:latest --format '{{.Size}} bytes'
 ```
 
-**Resultado observado antes del cambio:**
+**Observed result before the change:**
 
 ```text
 10691090779 bytes
 ```
 
-**Diagnóstico:** PyTorch se resolvió con dependencias CUDA en Linux. Además, la
-imagen conservaba la caché de `uv` y una capa adicional causada por cambiar
-recursivamente el propietario del entorno virtual. No se necesitaba GPU.
+**Diagnosis:** PyTorch resolved with CUDA dependencies on Linux. In addition,
+the image retained the `uv` cache and an extra layer caused by recursively
+changing the virtual environment owner. No GPU was needed.
 
-**Corrección:** se declaró `torch` como dependencia directa y se configuró en
-`pyproject.toml` el índice oficial de PyTorch para CPU en Linux. Se regeneró
-`uv.lock`. En `Dockerfile` se deshabilitó la caché persistente de `uv` y se
-eliminó el `chown -R` del entorno virtual, conservando el usuario sin privilegios.
-La decisión y sus compromisos se documentan en [DECISIONS.md](../DECISIONS.md).
+**Fix:** `torch` was declared as a direct dependency, and the official PyTorch
+CPU index for Linux was configured in `pyproject.toml`. `uv.lock` was
+regenerated. In `Dockerfile`, the persistent `uv` cache was disabled and
+`chown -R` on the virtual environment was removed while retaining the
+unprivileged user. The decision and its trade-offs are documented in
+[DECISIONS.md](../DECISIONS.md).
 
-Durante el ajuste inicial, configurar el índice solo para la dependencia
-transitiva no cambió la resolución: seguían apareciendo paquetes NVIDIA. Tras
-declarar `torch` como dependencia directa y volver a ejecutar `uv lock`, el
-resultado incluyó `torch 2.15.0+cpu` para Linux y eliminó esas dependencias.
+During the initial adjustment, configuring the index only for the transitive
+dependency did not change resolution: NVIDIA packages continued to appear.
+After declaring `torch` as a direct dependency and running `uv lock` again, the
+result included `torch 2.15.0+cpu` for Linux and removed those dependencies.
 
-### Validación posterior a la corrección de CUDA
+### Validation After the CUDA Fix
 
-Se regeneró y verificó el archivo de bloqueo con `uv` 0.13.8. En el equipo de
-desarrollo se utilizó una instalación temporal de `uv`, no una global:
+The lockfile was regenerated and verified with `uv` 0.13.8. A temporary `uv`
+installation, not a global one, was used on the development machine:
 
 ```bash
 uv lock --python 3.12
 uv lock --check --python 3.12
 ```
 
-**Salida relevante de la comprobación:**
+**Relevant check output:**
 
 ```text
 Using CPython 3.12.16
 Resolved 106 packages
 ```
 
-Se reconstruyó y se midió la imagen con la misma métrica anterior:
+The image was rebuilt and measured using the same metric as before:
 
 ```bash
 docker compose up --build -d
 docker image inspect ml-engineer-test-app:latest --format '{{.Size}} bytes'
 ```
 
-**Resultado observado después del cambio:**
+**Observed result after the change:**
 
 ```text
 629766551 bytes
 ```
 
-La reducción observada corresponde al conjunto de cambios en dependencias y
-capas, no únicamente a eliminar CUDA. La imagen y la caché anteriores no se
-eliminaron automáticamente y pueden seguir ocupando espacio local.
+The observed reduction corresponds to the combined dependency and layer
+changes, not solely to removing CUDA. The previous image and cache were not
+automatically deleted and may still occupy local disk space.
 
-Se verificaron PyTorch y la importación de `sentence-transformers` dentro de la
-imagen, sin descargar ni ejecutar un modelo de embeddings:
+PyTorch and the `sentence-transformers` import were verified inside the image
+without downloading or running an embeddings model:
 
 ```bash
 docker compose exec -T app python -c \
   "import torch; import sentence_transformers; print('torch:', torch.__version__); print('CUDA build:', torch.version.cuda); print('tensor:', (torch.tensor([2.0]) * 3).item()); print('sentence-transformers:', sentence_transformers.__version__); assert torch.version.cuda is None"
 ```
 
-**Salida observada:**
+**Observed output:**
 
 ```text
 torch: 2.15.0+cpu
@@ -163,19 +164,19 @@ tensor: 6.0
 sentence-transformers: 6.3.0
 ```
 
-El usuario de ejecución también se comprobó con `docker compose exec -T app id`:
+The runtime user was also checked with `docker compose exec -T app id`:
 
 ```text
 uid=10001(appuser) gid=10001(appuser) groups=10001(appuser)
 ```
 
-La API volvió a responder `{"status":"ok"}` después de reconstruir la imagen.
+The API returned `{"status":"ok"}` again after the image was rebuilt.
 
-### Pruebas unitarias dentro de Linux
+### Unit Tests Inside Linux
 
-Se usó un contenedor temporal basado en la imagen construida, con el directorio
-de pruebas montado en modo solo lectura. `pytest` se instaló temporalmente en
-ese contenedor; el comando necesita acceso a la red:
+A temporary container based on the built image was used, with the test
+directory mounted read-only. `pytest` was temporarily installed in that
+container; the command requires network access:
 
 ```bash
 docker run --rm \
@@ -185,7 +186,7 @@ docker run --rm \
   -c 'uv pip install --target /tmp/test-deps "pytest==9.2.0" && PYTHONPATH=/tmp/test-deps:/app python -m pytest -p no:cacheprovider /tests/unit'
 ```
 
-**Salida relevante observada:**
+**Relevant observed output:**
 
 ```text
 tests/unit/test_config.py .
@@ -194,82 +195,83 @@ tests/unit/test_health.py .
 3 passed in 2.82s
 ```
 
-**Resultado:** correcto en Linux ARM64. Se verificaron configuración, salud y
-la variante CPU de PyTorch. Los tiempos pueden variar.
+**Result:** Passed on Linux ARM64. Configuration, health, and the CPU variant of
+PyTorch were verified. Timings may vary.
 
-### Incidencia de publicación en GitHub
+### GitHub Publishing Issue
 
 ```bash
 git push -u origin feature/document-intelligence
 ```
 
-**Respuesta observada:** GitHub devolvió HTTP `403` por falta de permiso de
-escritura de la cuenta autenticada en el repositorio original.
+**Observed response:** GitHub returned HTTP `403` because the authenticated
+account lacked write permission on the original repository.
 
-**Diagnóstico:** la cuenta autenticada no tiene permiso de escritura en el
-repositorio original. La alternativa elegida fue crear un fork propio y usarlo
-para publicar la rama, conservando el repositorio original como `upstream`.
+**Diagnosis:** The authenticated account does not have write permission on the
+original repository. The chosen alternative was to create a personal fork and
+use it to publish the branch while retaining the original repository as
+`upstream`.
 
-Se volvió a intentar sin interacción de terminal:
+The attempt was repeated without terminal interaction:
 
 ```bash
 GIT_TERMINAL_PROMPT=0 git push -u origin feature/document-intelligence
 ```
 
-**Respuesta observada:** el servidor volvió a rechazar el acceso con HTTP 403
-para la cuenta `NickQ2003`. La rama no se publicó; no se hicieron cambios en el
-remoto. Los cambios locales sin commit tampoco se incluyeron en el intento.
+**Observed response:** The server rejected access again with HTTP 403 for the
+`NickQ2003` account. The branch was not published, and no changes were made to
+the remote. Uncommitted local changes were also not included in the attempt.
 
-**Resolución:** se creó el fork con:
+**Resolution:** The fork was created with:
 
 ```bash
 gh repo fork anvasquezre-cuesta/ML-Engineer-test --clone=false
 ```
 
-**Respuesta observada:** `https://github.com/NickQ2003/ML-Engineer-test`.
-Se configuró ese fork como `origin` y el repositorio original como `upstream`.
-Luego se publicó la rama en el fork:
+**Observed response:** `https://github.com/NickQ2003/ML-Engineer-test`.
+That fork was configured as `origin` and the original repository as `upstream`.
+The branch was then published to the fork:
 
 ```bash
 GIT_TERMINAL_PROMPT=0 git push -u origin feature/document-intelligence
 ```
 
-**Resultado observado:** se creó la rama remota
-`origin/feature/document-intelligence` y la rama local quedó configurada para
-seguirla. Esto resuelve la publicación en el fork, no concede permiso de
-escritura en el repositorio original. El pull request aún no se ha abierto.
+**Observed result:** The `origin/feature/document-intelligence` remote branch
+was created, and the local branch was configured to track it. This resolves
+publishing to the fork; it does not grant write permission on the original
+repository. The pull request has not yet been opened.
 
-### Comprobaciones pendientes
+### Pending Checks
 
-- Escribir datos en Qdrant, reiniciar el contenedor y comprobar su persistencia.
-- Probar la imagen en Linux x86_64; la ejecución anterior fue en Linux ARM64.
-- Comprobar el adaptador Qdrant, modelos reales y endpoints de extracción y RAG
-  cuando se implementen; no forman parte de las pruebas ya ejecutadas.
+- Write data to Qdrant, restart the container, and verify its persistence.
+- Test the image on Linux x86_64; the previous run was on Linux ARM64.
+- Test the Qdrant adapter, real models, and extraction and RAG endpoints when
+  implemented; they are not part of the tests already run.
 
-## 2026-11-14 — Hito 2: OCR y coordenadas
+## 2026-11-14 — Milestone 2: OCR and Coordinates
 
-**Entorno:** Docker Linux ARM64, Python 3.12.16, Tesseract y datos de inglés
-incluidos en la imagen. Los archivos de aplicación y pruebas se montaron desde
-el árbol de trabajo para verificar los cambios antes de reconstruir la imagen.
+**Environment:** Docker Linux ARM64, Python 3.12.16, and Tesseract with English
+language data included in the image. Application and test files were mounted
+from the working tree to verify changes before rebuilding the image.
 
-### Pruebas iniciales y cierre de recursos
+### Initial Tests and Resource Cleanup
 
-En la primera ejecución de la batería OCR, la salida relevante fue:
+On the first OCR test suite run, the relevant output was:
 
 ```text
 1 failed, 18 passed
 test_wraps_ocr_failures_and_closes_images: DID NOT RAISE ValueError
 ```
 
-**Diagnóstico:** el administrador de contexto de una imagen Pillow en memoria
-no cerraba el recurso de la manera que exigía la prueba ante un error de OCR.
-**Solución:** usar `contextlib.closing` para liberar explícitamente las imágenes;
-la prueba posterior también verifica el cierre del documento PDF al fallar OCR.
+**Diagnosis:** The context manager for an in-memory Pillow image did not close
+the resource in the manner required by the test when an OCR error occurred.
+**Resolution:** Use `contextlib.closing` to release images explicitly; the
+subsequent test also verifies that the PDF document closes when OCR fails.
 
-### Prueba de rotación y corrección
+### Rotation Test and Fix
 
-Se ejecutó OCR real sobre PDF sintéticos escaneados con diferentes rotaciones.
-Antes de la corrección, con los mismos caracteres de prueba, la salida fue:
+Real OCR ran on synthetic scanned PDFs with different rotations. Before the
+fix, using the same test characters, the output was:
 
 ```text
 rotation 0 text 'ALICE SMITH'
@@ -278,13 +280,12 @@ rotation 180 text 'HLINS S0N1V'
 rotation 270 text 'HLINS S0N1V'
 ```
 
-**Diagnóstico:** el renderizado respetaba la rotación del PDF, pero Tesseract
-podía leer el texto invertido. **Solución:** normalizar la orientación usando
-los metadatos del PDF antes de OCR y transformar los cuadros de vuelta a puntos
-del área de recorte sin rotar. No es una corrección general de inclinación ni de
-escaneos invertidos sin metadatos.
+**Diagnosis:** Rendering respected the PDF rotation, but Tesseract could read
+the text upside down. **Resolution:** Normalize orientation using the PDF
+metadata before OCR and transform the boxes back to points in the unrotated crop
+area. This is not a general fix for skew or upside-down scans without metadata.
 
-### OCR real sobre PDF de ejemplo
+### Real OCR on Sample PDFs
 
 ```bash
 docker run --rm \
@@ -294,7 +295,7 @@ docker run --rm \
   -c 'from pathlib import Path; from app.services.ocr_service import OCRService; svc = OCRService(); [(print(path.name, "pages:", len(doc.pages), "words:", [len(page.words) for page in doc.pages], "dimensions:", [(round(page.width), round(page.height)) for page in doc.pages])) for path in sorted(Path("/samples").glob("*.pdf")) for doc in [svc.extract_file(path)]]'
 ```
 
-**Salida observada antes del ajuste de orientación:**
+**Observed output before the orientation adjustment:**
 
 ```text
 company_memo.pdf pages: 1 words: [143] dimensions: [(612, 792)]
@@ -302,11 +303,11 @@ meeting_minutes.pdf pages: 2 words: [149, 134] dimensions: [(612, 792), (612, 79
 research_report.pdf pages: 2 words: [129, 134] dimensions: [(612, 792), (612, 792)]
 ```
 
-Los tres documentos se volvieron a procesar en la batería posterior. La cantidad
-de palabras depende del motor y sus datos; no demuestra por sí sola precisión de
-NER ni de cuadros de nombres.
+All three documents were processed again in the subsequent test suite. The word
+count depends on the engine and its data; by itself, it does not demonstrate NER
+or name-box accuracy.
 
-### Batería final: unitarias e integración OCR
+### Final Suite: Unit and OCR Integration Tests
 
 ```bash
 docker run --rm \
@@ -318,7 +319,7 @@ docker run --rm \
   -c 'uv pip install --target /tmp/test-deps "pytest==9.2.0" && PYTHONPATH=/tmp/test-deps:/app python -m pytest -p no:cacheprovider /tests/unit /tests/integration/test_ocr_real.py'
 ```
 
-**Salida observada:**
+**Observed output:**
 
 ```text
 collected 33 items
@@ -330,22 +331,22 @@ tests/integration/test_ocr_real.py ...........
 33 passed in 6.86s
 ```
 
-Se probaron las tres muestras y PDF sintéticos escaneados con las cuatro
-rotaciones y con/sin recorte. Las pruebas sintéticas verifican que el centro del
-cuadro OCR de una palabra coincida con su ubicación esperada; no garantizan
-precisión perfecta de todos los bordes o de cualquier documento. También se
-probaron límites de entrada, PDF inválidos y cifrados y limpieza ante error.
+All three samples and synthetic scanned PDFs were tested with all four rotations
+and with/without cropping. The synthetic tests verify that the center of a
+word's OCR box matches its expected location; they do not guarantee perfect
+accuracy for every edge or for arbitrary documents. Input limits, invalid and
+encrypted PDFs, and cleanup on error were also tested.
 
-Después se reconstruyó la imagen y se verificó el servicio:
+The image was then rebuilt and the service verified:
 
 ```bash
 docker compose up --build -d
 curl --fail --silent --show-error http://localhost:8000/health
 ```
 
-**Resultado observado:** ambos contenedores iniciaron y `/health` respondió
-`{"status":"ok"}`. Se repitió la batería usando el código incluido en la imagen
-reconstruida, sin montar `app/` desde el host:
+**Observed result:** Both containers started and `/health` returned
+`{"status":"ok"}`. The suite was repeated using the code included in the rebuilt
+image, without mounting `app/` from the host:
 
 ```bash
 docker run --rm \
@@ -356,54 +357,54 @@ docker run --rm \
   -c 'uv pip install --target /tmp/test-deps "pytest==9.2.0" && PYTHONPATH=/tmp/test-deps:/app python -m pytest -p no:cacheprovider /tests/unit /tests/integration/test_ocr_real.py'
 ```
 
-**Salida relevante:** `33 passed in 7.32s`.
+**Relevant output:** `33 passed in 7.32s`.
 
-**Pendientes:** implementar validación HTTP y el endpoint de extracción, NER,
-un límite de píxeles renderizados, pruebas en x86_64 y persistencia de Qdrant.
-El idioma instalado es inglés; otros idiomas requieren datos adicionales.
+**Pending:** Implement HTTP validation and the extraction endpoint, NER, a
+rendered-pixel limit, x86_64 testing, and Qdrant persistence. The installed
+language is English; other languages require additional data.
 
-## 2026-11-15 — Hito 2: ejecución asíncrona del OCR
+## 2026-11-15 — Milestone 2: asynchronous OCR execution
 
-**Objetivo:** no bloquear el bucle de eventos mientras se procesan PDF y limitar
-el número de trabajos OCR simultáneos sin cambiar el contrato HTTP de la prueba.
-**Entorno:** imagen Docker Linux ARM64 reconstruida, Python 3.12.16, Tesseract
-en inglés y pytest 9.2.0 instalado en el contenedor temporal de pruebas.
+**Objective:** Keep PDF processing from blocking the event loop and limit the
+number of concurrent OCR jobs without changing the test's HTTP contract.
+**Environment:** rebuilt Linux ARM64 Docker image, Python 3.12.16, English
+Tesseract, and pytest 9.2.0 installed in a temporary test container.
 
-**Implementación:** `extract_async` y `extract_file_async` envían el trabajo
-bloqueante a procesos de AnyIO, evitando ejecución paralela de PyMuPDF en hilos.
-`get_ocr_service()` permite reutilizar el servicio y su limitador. El valor
-`OCR_MAX_CONCURRENT_JOBS` es configurable y predetermina 2 por proceso de la
-aplicación. El endpoint HTTP todavía no está implementado.
+**Implementation:** `extract_async` and `extract_file_async` dispatch blocking
+work to AnyIO processes, avoiding parallel PyMuPDF execution in threads.
+`get_ocr_service()` allows the service and its limiter to be reused.
+`OCR_MAX_CONCURRENT_JOBS` is configurable and defaults to 2 per application
+process. The HTTP endpoint is not implemented yet.
 
-### Construcción y comprobación de configuración
+### Build and configuration check
 
 ```bash
 uv lock --python 3.12
 docker compose up --build -d
 ```
 
-**Resultado observado:** `uv` resolvió 106 paquetes; Docker construyó la imagen
-y arrancó la aplicación. Se agregó `anyio` como dependencia directa y se actualizó
-`uv.lock`.
+**Observed result:** `uv` resolved 106 packages; Docker built the image and
+started the application. `anyio` was added as a direct dependency and `uv.lock`
+was updated.
 
-Se comprobó además la coherencia del bloqueo con `uv lock --check --python 3.12`
-(106 paquetes resueltos) y que `docker compose config --quiet` terminó sin error.
-Tras el arranque, `docker compose ps` mostró `app` y `qdrant` activos; `curl
---fail --silent --show-error http://localhost:8000/health` devolvió
-`{"status":"ok"}`. Dentro de la aplicación se comprobó:
+Lockfile consistency was also checked with `uv lock --check --python 3.12`
+(106 packages resolved), and `docker compose config --quiet` completed without
+errors. After startup, `docker compose ps` showed `app` and `qdrant` running;
+`curl --fail --silent --show-error http://localhost:8000/health` returned
+`{"status":"ok"}`. The following was checked inside the application:
 
 ```bash
 docker compose exec -T app python -c "from app.core.config import get_settings; from app.services.ocr_service import get_ocr_service; print('OCR_MAX_CONCURRENT_JOBS:', get_settings().ocr_max_concurrent_jobs); print('shared_service:', get_ocr_service() is get_ocr_service())"
 ```
 
-**Salida observada:**
+**Observed output:**
 
 ```text
 OCR_MAX_CONCURRENT_JOBS: 2
 shared_service: True
 ```
 
-### Pruebas unitarias e integración en la imagen reconstruida
+### Unit and integration tests in the rebuilt image
 
 ```bash
 docker run --rm \
@@ -414,7 +415,7 @@ docker run --rm \
   -c 'uv pip install --target /tmp/test-deps "pytest==9.2.0" && PYTHONPATH=/tmp/test-deps:/app python -m pytest -p no:cacheprovider /tests/unit /tests/integration'
 ```
 
-**Salida relevante observada:**
+**Relevant observed output:**
 
 ```text
 collected 44 items
@@ -428,32 +429,31 @@ tests/integration/test_ocr_real.py .............
 44 passed in 16.76s
 ```
 
-Se verificaron, entre otros: ejecución en un proceso distinto, bucle de eventos
-no bloqueado, límite de concurrencia, errores de validación, rechazo de archivos
-grandes antes de enviarlos al proceso, cancelación de una tarea en espera,
-finalización de un trabajo ya iniciado ante cancelación con AnyIO y OCR real por
-las interfaces de bytes y de archivo. Una prueba usa una ruta OCR simulada y la
-ruta real `/health` para comprobar que esta última siga respondiendo; no prueba
-el futuro endpoint `/api/extract`.
+Coverage included execution in a separate process, a non-blocked event loop, a
+concurrency limit, validation errors, rejecting large files before sending them
+to the process, cancellation of a waiting task, completing an already-started
+job after AnyIO cancellation, and real OCR through the bytes and file interfaces.
+One test uses a simulated OCR path and the real `/health` route to verify that the
+latter remains responsive; it does not test the future `/api/extract` endpoint.
 
-**Limitaciones:** el límite se aplica por proceso de aplicación, no globalmente;
-no limita el número de solicitudes en cola ni la memoria de cargas ya recibidas.
-No es una cola persistente: si el proceso termina, no hay garantía de conservar
-el trabajo. Falta probar los endpoints reales cuando se implementen y validar
-el comportamiento en Linux x86_64.
+**Limitations:** the limit applies per application process, not globally; it does
+not limit the number of queued requests or the memory used by uploads already
+received. This is not a persistent queue: if the process exits, the job is not
+guaranteed to be retained. Real endpoints still need to be tested when
+implemented, and behavior on Linux x86_64 remains to be validated.
 
-## 2026-11-15 — Revisión de OCR y concurrencia
+## 2026-11-15 — OCR and concurrency review
 
-**Estado:** revisión completada; las correcciones siguen pendientes. El plan y
-los criterios de aceptación están en [OCR_REVIEW_PLAN.md](OCR_REVIEW_PLAN.md).
-Se repitió el comando de la batería anterior en la imagen construida y se observó
-`44 passed in 17.34s`. Las reproducciones siguientes usaron contenedores
-temporales Linux ARM64; no se cambiaron los PDF de ejemplo.
+**Status:** review completed; fixes are still pending. The plan and acceptance
+criteria are in [OCR_REVIEW_PLAN.md](OCR_REVIEW_PLAN.md). The previous suite
+command was repeated in the built image and reported `44 passed in 17.34s`. The
+following reproductions used temporary Linux ARM64 containers; sample PDFs were
+not changed.
 
-### Página enorme: detección sin reservar la imagen
+### Oversized page: detection before image allocation
 
-Se interceptó `get_pixmap()` para observar la reserva que se intentaría hacer,
-sin asignar realmente los más de 2 GB estimados para una copia RGB:
+`get_pixmap()` was intercepted to observe the allocation that would have been
+attempted, without actually allocating the estimated 2+ GB for one RGB copy:
 
 ```bash
 docker run --rm -i -v "$PWD/app:/app/app:ro" --entrypoint python ml-engineer-test-app:latest - <<'PY'
@@ -479,7 +479,7 @@ finally:
 PY
 ```
 
-**Salida observada:**
+**Observed output:**
 
 ```text
 Input bytes: 522
@@ -488,14 +488,14 @@ Approximate RGB bytes for one copy: 2314851852
 Reached rendering instead of rejecting: OCR failed on page 0
 ```
 
-**Resultado:** incorrecto para una protección de recursos suficiente. Se abrió
-R-01; no se ha aplicado aún un límite de píxeles.
+**Result:** insufficient resource protection. R-01 was opened; no pixel limit had
+been applied yet.
 
-### Rotación de metadatos que corrige un escaneo girado
+### Metadata rotation that corrects a rotated scan
 
-Se construyó un PDF sintético con imagen físicamente girada y rotación de
-metadatos que la muestra derecha, y se comparó OCR real sobre la vista con el
-resultado del servicio:
+A synthetic PDF was created with a physically rotated image and metadata
+rotation that displays it upright. Real OCR on the displayed view was compared
+with the service result:
 
 ```bash
 docker run --rm -i -v "$PWD/app:/app/app:ro" --entrypoint python ml-engineer-test-app:latest - <<'PY'
@@ -524,21 +524,20 @@ with pymupdf.open() as d:
 PY
 ```
 
-**Salida observada:**
+**Observed output:**
 
 ```text
 Displayed orientation OCR: 'ALICE SMITH\nJOHN ANDERSON'
 Service OCR: 'NOSdYsAdNV NHOPr\nHLINWIS S0NIV'
 ```
 
-**Resultado:** incorrecto. Se abrió R-03; la normalización de rotación sigue
-pendiente de corrección.
+**Result:** incorrect. R-03 was opened; rotation normalization still needed a fix.
 
-### Cancelación directa durante un subprocesso OCR
+### Direct cancellation during an OCR subprocess
 
-Se sustituyó temporalmente el ejecutable de Tesseract dentro del contenedor por
-un proceso controlado de larga duración, conservando la comprobación real de
-versión. El proceso simulado se detuvo antes de terminar la prueba:
+The Tesseract executable inside the container was temporarily replaced with a
+controlled long-running process while retaining the real version check. The
+simulated process was stopped before the test ended:
 
 ```bash
 docker run --rm -i -v "$PWD/app:/app/app:ro" -v "$PWD/sample_pdfs:/samples:ro" --entrypoint python ml-engineer-test-app:latest - <<'PY'
@@ -567,20 +566,21 @@ asyncio.run(main())
 PY
 ```
 
-**Salida observada:**
+**Observed output:**
 
 ```text
 Tesseract survived: True
 Tesseract-related temp files left: 2
 ```
 
-**Resultado:** incorrecto. Se abrió R-02; la prueba actual de cancelación AnyIO
-no cubre esta cancelación directa. El contenedor temporal se eliminó al finalizar.
+**Result:** incorrect. R-02 was opened; the existing AnyIO cancellation test did
+not cover this direct cancellation. The temporary container was removed at the
+end.
 
-### Capacidad e inicialización concurrente
+### Capacity and concurrent initialization
 
-Con el único permiso del limitador ocupado, se lanzaron cuatro llamadas con
-entradas instrumentadas de 1 MB:
+With the sole limiter permit occupied, four calls were launched with instrumented
+1 MB inputs:
 
 ```bash
 docker run --rm -i -v "$PWD/app:/app/app:ro" --entrypoint python ml-engineer-test-app:latest - <<'PY'
@@ -606,7 +606,7 @@ asyncio.run(main())
 PY
 ```
 
-**Salida observada:**
+**Observed output:**
 
 ```text
 jobs waiting with no capacity: 4
@@ -614,8 +614,8 @@ payloads already serialized: 4
 total payload bytes already serialized: 4000000
 ```
 
-Se llamó también al proveedor desde cuatro hilos usando una barrera en una
-implementación simulada del constructor:
+The provider was also called from four threads using a barrier in a simulated
+constructor implementation:
 
 ```bash
 docker run --rm -i -v "$PWD/app:/app/app:ro" --entrypoint python ml-engineer-test-app:latest - <<'PY'
@@ -636,7 +636,7 @@ print('sequential subsequent calls share instance:',mod.get_ocr_service() is mod
 PY
 ```
 
-**Salida observada:**
+**Observed output:**
 
 ```text
 concurrent first calls: 4
@@ -644,52 +644,51 @@ distinct service instances: 4
 sequential subsequent calls share instance: True
 ```
 
-**Resultado:** R-04 y R-05 siguen abiertos; los detalles y las decisiones
-propuestas están en el plan.
+**Result:** R-04 and R-05 remain open; details and proposed decisions are in the
+review plan.
 
-## 2026-11-15 — Correcciones de la revisión OCR
+## 2026-11-15 — OCR review fixes
 
-**Estado:** correcciones implementadas a nivel de servicio. La admisión antes de
-parsear multipart, los límites globales y el endpoint real siguen pendientes.
-Las decisiones y limitaciones se detallan en `docs/OCR_REVIEW_PLAN.md`.
+**Status:** fixes implemented at the service layer. Admission before multipart
+parsing, global limits, and the real endpoint are still pending. Decisions and
+limitations are documented in `docs/OCR_REVIEW_PLAN.md`.
 
-- R-01: estimación conservadora de píxeles antes del renderizado y rechazo de
-  páginas excesivas, con umbral configurable; falta calibrarlo en despliegue.
-- R-02: trabajo supervisado en subprocessos POSIX, directorio temporal privado,
-  límite total y limpieza de grupo de procesos en timeout o cierre controlado.
-- R-03: orientación visible primero y segunda pasada ante baja confianza;
-  pruebas reales con rotación física, metadatos, recortes y cuadros.
-- R-04: límite local de trabajos y cola, timeout de cola y lectura de stream
-  con admisión previa; falta controlar el cuerpo multipart en el endpoint real.
-- R-05: servicio creado en el ciclo de vida FastAPI, probado con solicitudes
-  concurrentes a una ruta de prueba que utiliza la dependencia compartida.
-- R-06: nivel validado y aplicado; registros de aplicación en JSON.
+- R-01: conservative pixel estimation before rendering and rejection of
+  oversized pages with a configurable threshold; deployment calibration remains.
+- R-02: supervised POSIX subprocesses, a private temporary directory, an overall
+  limit, and process-group cleanup on timeout or controlled shutdown.
+- R-03: visible orientation first and a second pass on low confidence; real tests
+  with physical rotation, metadata, cropping, and boxes.
+- R-04: local job and queue limits, queue timeout, and stream reading with
+  admission acquired first; the real endpoint's multipart body still needs bounds.
+- R-05: service created in the FastAPI lifecycle, tested with concurrent requests
+  to a test route that uses the shared dependency.
+- R-06: log level validated and applied; application logs emitted as JSON.
 
-### Incidencia durante la corrección de logs
+### Logging fix incident
 
-Tras aplicar inicialmente el nivel sin instalar un manejador para la aplicación,
-este comando terminó sin imprimir el mensaje de depuración:
+After initially applying the log level without installing an application handler,
+this command completed without printing the debug message:
 
 ```bash
 docker compose exec -T app python -c "import logging; from app.core.logging import configure_logging; configure_logging('DEBUG'); logging.getLogger('app.review').debug('DEBUG_SHOULD_BE_VISIBLE')"
 ```
 
-**Diagnóstico:** el nivel estaba aplicado, pero la aplicación no tenía un
-manejador que emitiera sus registros. **Solución:** instalar un manejador JSON
-para `app` y mantener los niveles de Uvicorn configurables. Tras reconstruir la
-imagen se ejecutó:
+**Diagnosis:** the level was applied, but the application had no handler to emit
+its records. **Fix:** install a JSON handler for `app` and keep Uvicorn levels
+configurable. After rebuilding the image, the following was run:
 
 ```bash
 docker compose exec -T app python -c "import logging; from app.core.logging import configure_logging; configure_logging('DEBUG'); logging.getLogger('app.check').debug('logging-ok')"
 ```
 
-**Salida relevante observada:**
+**Relevant observed output:**
 
 ```json
 {"timestamp":"2026-11-15T06:27:18.597653+00:00","level":"DEBUG","logger":"app.check","message":"logging-ok"}
 ```
 
-### Batería final en la imagen reconstruida
+### Final suite in the rebuilt image
 
 ```bash
 docker compose up --build -d
@@ -701,7 +700,7 @@ docker run --rm \
   -c 'uv pip install --target /tmp/test-deps "pytest==9.2.0" && PYTHONPATH=/tmp/test-deps:/app python -m pytest -p no:cacheprovider /tests/unit /tests/integration'
 ```
 
-**Salida relevante observada:**
+**Relevant observed output:**
 
 ```text
 collected 67 items
@@ -714,19 +713,20 @@ tests/integration/test_worker_cleanup.py ..
 67 passed in 19.18s
 ```
 
-Las pruebas de limpieza usan un subprocesso simulado que ignora `SIGTERM` y
-verifican la parada y ausencia de temporales después de cancelación con cierre
-controlado y de timeout. No demuestran limpieza ante caída abrupta de la máquina
-o `SIGKILL` del contenedor. La prueba HTTP usa una ruta simulada, no `/api/extract`.
-`docker compose ps` mostró ambos contenedores activos y `curl --fail --silent
---show-error http://localhost:8000/health` devolvió `{"status":"ok"}`.
+Cleanup tests use a simulated subprocess that ignores `SIGTERM` and verify that
+it stops and leaves no temporary files after cancellation with controlled
+shutdown and after timeout. They do not demonstrate cleanup after an abrupt
+machine crash or container `SIGKILL`. The HTTP test uses a simulated route, not
+`/api/extract`. `docker compose ps` showed both containers running, and `curl
+--fail --silent --show-error http://localhost:8000/health` returned
+`{"status":"ok"}`.
 
-## 2026-11-15 — Revisión visual preliminar de cuadros OCR
+## 2026-11-15 — Preliminary visual review of OCR boxes
 
-Se procesó `sample_pdfs/meeting_minutes.pdf` con `OCRService` y se dibujó cada
-cuadro de palabra sobre una copia del PDF. Se usó un directorio temporal como
-destino inicial y después se copió el archivo, sin sobrescribir, a
-`docs_dev/meeting_minutes_ocr_visual.pdf`, que permanece fuera de Git.
+`sample_pdfs/meeting_minutes.pdf` was processed with `OCRService`, and each word
+box was drawn on a copy of the PDF. A temporary directory was used as the initial
+destination; the file was then copied without overwriting to
+`docs_dev/meeting_minutes_ocr_visual.pdf`, which remains outside Git.
 
 ```bash
 docker run --rm -i --user "$(id -u):$(id -g)" \
@@ -740,7 +740,7 @@ from app.services.ocr_service import OCRService
 source = Path('/samples/meeting_minutes.pdf')
 destination = Path('/output/meeting_minutes_ocr_visual.pdf')
 if destination.exists():
-    raise SystemExit(f'El archivo ya existe; no se sobrescribió: {destination}')
+    raise SystemExit(f'File already exists; it was not overwritten: {destination}')
 result = OCRService().extract_file(source)
 with pymupdf.open(source) as document:
     for page_result in result.pages:
@@ -749,39 +749,39 @@ with pymupdf.open(source) as document:
             box = word.box
             page.draw_rect(pymupdf.Rect(box.x, box.y, box.x + box.width, box.y + box.height), color=(1, 0, 0), width=0.7, overlay=True)
     document.save(destination, deflate=True)
-print(f'PDF generado: {destination}')
-print(f'Páginas: {len(result.pages)}; palabras por página: {[len(page.words) for page in result.pages]}')
+print(f'Generated PDF: {destination}')
+print(f'Pages: {len(result.pages)}; words per page: {[len(page.words) for page in result.pages]}')
 PY
 ```
 
-**Salida observada:** `Páginas: 2; palabras por página: [149, 134]`. El usuario
-revisó y aprobó visualmente los cuadros para este PDF. Sus observaciones y las
-limitaciones de esa revisión están en [MANUAL_TEST_LOG.md](MANUAL_TEST_LOG.md).
+**Observed output:** `Pages: 2; words per page: [149, 134]`. The user visually
+reviewed and approved the boxes for this PDF. Their observations and the review's
+limitations are in [MANUAL_TEST_LOG.md](MANUAL_TEST_LOG.md).
 
-## 2026-11-15 — Medición exploratoria de memoria OCR
+## 2026-11-15 — Exploratory OCR memory measurement
 
-Se midió el pico de memoria del cgroup en contenedores temporales limitados a
-2 GiB, con uno o dos OCR simultáneos. Con dos trabajos sobre una página
-rasterizada sintética de aproximadamente 19,77 millones de píxeles se observó
-un pico de 985,3 MiB; una página superior al límite se rechazó correctamente.
+The cgroup memory peak was measured in temporary containers limited to 2 GiB,
+with one or two concurrent OCR jobs. Two jobs on a synthetic rasterized page of
+approximately 19.77 million pixels produced a peak of 985.3 MiB; a page above the
+limit was correctly rejected.
 
-**Decisión:** mantener provisionalmente `MAX_PAGE_PIXELS=20000000`. Esta medición
-no incluye toda la aplicación ni prueba el peor caso, y no constituye calibración
-para producción. Entorno, comandos, resultados y limitaciones completos en
+**Decision:** provisionally retain `MAX_PAGE_PIXELS=20000000`. This measurement
+does not include the complete application or test the worst case, and is not
+production calibration. Full environment, commands, results, and limitations are in
 [OCR_MEMORY_CALIBRATION.md](OCR_MEMORY_CALIBRATION.md).
 
-## 2026-11-15 — Hito 3: contratos y límites de entrada
+## 2026-11-15 — Milestone 3: input contracts and limits
 
-**Entorno:** Docker sobre macOS ARM64; contenedor Linux aarch64, Python 3.12.16,
-FastAPI 0.163.0, Starlette 1.10.0, Uvicorn 0.54.0 y pytest 9.2.0. Pytest se
-instaló solo en el contenedor temporal de pruebas, no en la imagen de producción.
+**Environment:** Docker on macOS ARM64; Linux aarch64 container, Python 3.12.16,
+FastAPI 0.163.0, Starlette 1.10.0, Uvicorn 0.54.0, and pytest 9.2.0. Pytest was
+installed only in a temporary test container, not in the production image.
 
-**Cambios comprobados:** contrato interno de span por página; validador de `names`
-con límites de bytes UTF-8 y cantidad; configuración validada; middleware ASGI
-de bytes por cuerpo para `POST /api/extract`. No se modificaron los esquemas
-públicos ni se implementó el endpoint, NER o fuzzy matching.
+**Changes checked:** page-local span contract; `names` validator with UTF-8 byte
+and item-count limits; validated configuration; ASGI request-body byte middleware
+for `POST /api/extract`. Public schemas were not changed, and the endpoint, NER,
+and fuzzy matching were not implemented at this point.
 
-### Validación inicial y construcción
+### Initial validation and build
 
 ```bash
 docker compose config --quiet
@@ -790,11 +790,11 @@ git diff --check
 git diff -- app/models/schemas.py
 ```
 
-`docker compose config --quiet` y los dos comandos `git diff` terminaron sin salida;
-la imagen se construyó correctamente. El último comando confirma que el archivo de
-esquemas públicos no cambió. También se ejecutó la batería focalizada durante el
-desarrollo con el código montado de solo lectura; las dos ejecuciones recogieron
-68 y 70 pruebas respectivamente, todas aprobadas.
+`docker compose config --quiet` and both `git diff` commands completed without
+output; the image built successfully. The last command confirms that the public
+schema file did not change. The focused suite was also run during development with
+the code mounted read-only; the two runs collected 68 and 70 tests, respectively,
+and all passed.
 
 ```bash
 docker run --rm \
@@ -804,7 +804,7 @@ docker run --rm \
   -c 'uv pip install --target /tmp/test-deps "pytest==9.2.0" && PYTHONPATH=/tmp/test-deps:/app python -m pytest -p no:cacheprovider /tests/unit/test_config.py /tests/unit/test_extraction_contracts.py /tests/integration/test_extraction_request_limits.py'
 ```
 
-### Batería completa en la imagen reconstruida
+### Full suite in the rebuilt image
 
 ```bash
 docker run --rm \
@@ -815,7 +815,7 @@ docker run --rm \
   -c 'uv pip install --target /tmp/test-deps "pytest==9.2.0" && PYTHONPATH=/tmp/test-deps:/app python -m pytest -p no:cacheprovider /tests/unit /tests/integration'
 ```
 
-**Salida final observada (abreviada):**
+**Abbreviated final observed output:**
 
 ```text
 platform linux -- Python 3.12.16, pytest-9.2.0
@@ -828,42 +828,42 @@ tests/integration/test_worker_cleanup.py ..
 146 passed in 20.12s
 ```
 
-La batería incluye solicitudes multipart fragmentadas sin `Content-Length`, con
-longitud exacta y con longitud falsamente pequeña a nivel ASGI; rechazo anticipado
-de longitud declarada excesiva o mal formada; límites exactos y exceso de `names`;
-y una solicitud `chunked` por HTTP real contra Uvicorn. Se comprobó que el archivo
-temporal multipart se cierra ante exceso, cancelación y desconexión, reduciendo el
-umbral de volcado a disco durante esas pruebas. También se comprobó que no se
-envía una segunda respuesta si el exceso se detecta después de iniciar una.
+The suite includes chunked multipart requests without `Content-Length`, with an
+exact length, and with a falsely small length at the ASGI layer; early rejection
+of excessive or malformed declared lengths; exact `names` limits and overflow;
+and a real chunked HTTP request to Uvicorn. The temporary multipart file was
+verified to close on overflow, cancellation, and disconnect, with the disk-spool
+threshold lowered for those tests. The middleware was also verified not to send a
+second response if overflow is detected after a response has started.
 
-**Resultado:** correcto para los componentes y rutas simuladas probados. La ruta
-HTTP real de extracción aún no existe; las pruebas de multipart utilizan un
-endpoint de prueba y no demuestran el flujo OCR/NER. El middleware cuenta solo
-bytes que la aplicación lee y no limita cargas concurrentes ni el tiempo de
-lectura. La validación de `names` debe conectarse al implementar el endpoint.
+**Result:** correct for the tested components and simulated routes. The real HTTP
+extraction route did not yet exist; multipart tests use a test endpoint and do
+not demonstrate the OCR/NER flow. The middleware counts only bytes read by the
+application and does not limit concurrent uploads or read time. The `names`
+validator still needed to be connected when implementing the endpoint.
 
-**Hallazgo pendiente:** en la ruta simulada, FastAPI/Starlette devuelve `400` al
-rechazar un campo multipart mayor de 1 MiB antes de ejecutar el validador. La
-integración real debe resolver el parseo y la traducción de errores para cumplir
-la respuesta `413` prevista para campos excesivos. Debe mantenerse la prueba de
-limpieza al actualizar Starlette, ya que el middleware depende de su manejo de
-errores del parser.
+**Open finding:** on the simulated route, FastAPI/Starlette returned `400` when
+rejecting a multipart field larger than 1 MiB before running the validator. The
+real integration needed to handle parsing and error translation to return the
+intended `413` for oversized fields. Keep the cleanup test when upgrading
+Starlette because the middleware depends on its parser error handling.
 
-**Contenedores en ejecución:** se construyó la imagen nueva sin reiniciar el
-servicio Compose existente; este continúa usando la imagen anterior hasta que se
-recree. No se afirmó que el servicio ya activo esté ejecutando el código nuevo.
+**Running containers:** the new image was built without restarting the existing
+Compose service; it continues to use the previous image until recreated. No claim
+was made that the already-running service was using the new code.
 
-## 2026-11-15 — Hito 3: NER por página y empaquetado del modelo
+## 2026-11-15 — Milestone 3: page-local NER and model packaging
 
-**Entorno:** Docker sobre macOS ARM64; Linux aarch64, Python 3.12.16,
-spaCy 3.8.18, `en_core_web_sm` 3.8.0, Uvicorn 0.54.0 y pytest 9.2.0.
-La prueba utiliza el modelo inglés incluido en la imagen, no un modelo simulado.
+**Environment:** Docker on macOS ARM64; Linux aarch64, Python 3.12.16,
+spaCy 3.8.18, `en_core_web_sm` 3.8.0, Uvicorn 0.54.0, and pytest 9.2.0.
+The test uses the English model included in the image, not a simulated model.
 
-### Dependencias e imagen
+### Dependencies and image
 
-Se agregó el wheel oficial del modelo a `pyproject.toml` y se regeneró el lock;
-la versión de spaCy ya fijada permaneció en 3.8.18. `uv.lock` registra la URL y
-el SHA-256 del wheel. El Dockerfile comprueba la carga y la presencia de NER.
+The official model wheel was added to `pyproject.toml` and the lockfile was
+regenerated; the already-pinned spaCy version remained 3.8.18. `uv.lock` records
+the wheel URL and SHA-256. The Dockerfile checks that the model loads and provides
+NER.
 
 ```bash
 /private/var/folders/3b/9b_qzjg94m99y011jncyj9300000gn/T/opencode/uv-tool/bin/uv lock --python 3.12
@@ -872,13 +872,13 @@ docker compose config --quiet
 docker compose build app
 ```
 
-**Resultado:** `Resolved 107 packages`; el lock añadió `en-core-web-sm v3.8.0` y
-la imagen se construyó con éxito. La capa de comprobación del modelo pasó. El
-binario de `uv` indicado es el usado en este host; en otro entorno se puede usar
-`uv` instalado en el PATH. La construcción inicial necesitó red para GitHub y las
-dependencias; las ejecuciones posteriores pueden aprovechar la caché de Docker.
+**Result:** `Resolved 107 packages`; the lockfile added `en-core-web-sm v3.8.0`
+and the image built successfully. The model verification layer passed. The `uv`
+binary path shown is the one used on this host; another environment can use `uv`
+from its PATH. The initial build required network access to GitHub and the
+dependencies; later builds may use the Docker cache.
 
-### Ejecución sin red y reutilización del proceso
+### Offline inference and worker reuse
 
 ```bash
 docker run --rm --network none -i --entrypoint python ml-engineer-test-app:latest - <<'PY'
@@ -907,7 +907,7 @@ asyncio.run(main())
 PY
 ```
 
-**Salida observada:**
+**Observed output:**
 
 ```text
 spaCy: 3.8.18 | model: 3.8.0
@@ -915,7 +915,7 @@ network: disabled | pages: 2 | detections: 4 | worker reused: yes
 worker stopped: yes
 ```
 
-### Batería completa
+### Full suite
 
 ```bash
 docker run --rm \
@@ -926,33 +926,33 @@ docker run --rm \
   -c 'uv pip install --target /tmp/test-deps "pytest==9.2.0" && PYTHONPATH=/tmp/test-deps:/app python -m pytest -p no:cacheprovider /tests/unit /tests/integration'
 ```
 
-**Salida relevante:** `collected 195 items` → **`195 passed in 32.71s`**.
-Las pruebas cubren offsets por página, repeticiones, filtro de etiquetas, ausencia
-del modelo, entrada excesiva, procesos reutilizados, saturación, cancelación,
-timeout y cierre de un proceso simulado que ignora `SIGTERM`. También comprueban
-`/health` durante inferencia real y durante un proceso simulado lento. El OCR y
-NER reales se probaron juntos sobre `meeting_minutes.pdf` sin endpoint HTTP.
+**Relevant output:** `collected 195 items` → **`195 passed in 32.71s`**.
+Tests cover page-local offsets, repeated occurrences, label filtering, missing
+model, excessive input, worker reuse, saturation, cancellation, timeout, and
+shutdown of a simulated process that ignores `SIGTERM`. They also check
+`/health` during real inference and during a slow simulated process. Real OCR and
+NER were tested together on `meeting_minutes.pdf` without an HTTP endpoint.
 
-### Observación exploratoria en PDF de ejemplo
+### Exploratory observations on sample PDFs
 
-Se compararon apariciones exactas por página del OCR + NER con listas preparadas
-por el asistente a partir de la lectura de los PDF de muestra. **Estas referencias
-no han sido revisadas ni aprobadas por una persona**, no son un conjunto de
-evaluación independiente y no permiten extrapolar precisión a otros documentos.
-Cada aparición repetida se cuenta por separado; el criterio fue el nombre
-completo exacto, no la ubicación ni la etiqueta interna de otras entidades.
+Exact per-page OCR + NER occurrences were compared with lists prepared by the
+assistant after reading the sample PDFs. **These references have not been reviewed
+or approved by a person**, are not an independent evaluation set, and do not allow
+accuracy to be extrapolated to other documents. Repeated occurrences are counted
+separately; the criterion was an exact full-name match, not location or the
+internal label of other entities.
 
-| PDF | Referencia | Coincidencias exactas | Falsos positivos | Falsos negativos |
+| PDF | Reference | Exact matches | False positives | False negatives |
 |---|---:|---:|---:|---:|
 | `company_memo.pdf` | 8 | 8 | 1 | 0 |
 | `meeting_minutes.pdf` | 24 | 22 | 1 | 2 |
 
-En el primer PDF se etiquetó el nombre del proyecto `Atlas` como persona. En el
-segundo se etiquetó un fragmento de encabezado y se omitieron dos apariciones de
-`Elizabeth Park`. La combinación OCR + modelo inglés pequeño puede equivocarse;
-filtrar la etiqueta `PERSON` no constituye una garantía semántica.
+In the first PDF, the project name `Atlas` was labeled as a person. In the second,
+a heading fragment was labeled as a person and two occurrences of `Elizabeth
+Park` were missed. OCR combined with a small English model can be wrong; filtering
+on the `PERSON` label is not a semantic guarantee.
 
-Comando utilizado para la comparación:
+Command used for the comparison:
 
 ```bash
 docker run --rm --network none -i -v "$PWD/sample_pdfs:/samples:ro" --entrypoint python ml-engineer-test-app:latest - <<'PY'
@@ -991,24 +991,24 @@ for filename, pages in reference.items():
 PY
 ```
 
-**Alcance y pendientes:** no se implementaron cuadros, fuzzy matching ni el
-endpoint real. Los límites de NER son por proceso y la admisión del flujo completo
-OCR–NER sigue pendiente. El servicio Compose que ya estaba activo no se reinició
-y conserva su imagen anterior. Una consulta exploratoria a la API de GitHub falló
-por comillas incorrectas en el script; no fue necesaria para instalar el wheel,
-cuya resolución y carga se comprobaron con `uv` y las pruebas descritas.
+**Scope and pending work:** boxes, fuzzy matching, and the real endpoint had not
+been implemented. NER limits are per process, and admission for the complete
+OCR–NER flow remains pending. The existing Compose service was not restarted and
+still uses its previous image. An exploratory GitHub API request failed because
+of incorrect quoting in the script; it was not needed to install the wheel, whose
+resolution and loading were verified with `uv` and the tests described above.
 
-## 2026-11-15 — Hito 3: endpoint de extracción y cuadros
+## 2026-11-15 — Milestone 3: extraction endpoint and bounding boxes
 
-**Entorno:** Docker sobre macOS ARM64; Linux aarch64, Python 3.12.16,
-FastAPI 0.163.0, Starlette 1.10.0, Tesseract inglés, spaCy 3.8.18,
-`en_core_web_sm` 3.8.0 y pytest 9.2.0.
+**Environment:** Docker on macOS ARM64; Linux aarch64, Python 3.12.16,
+FastAPI 0.163.0, Starlette 1.10.0, English Tesseract, spaCy 3.8.18,
+`en_core_web_sm` 3.8.0, and pytest 9.2.0.
 
-**Alcance:** endpoint real `POST /api/extract`, asociación de spans con palabras
-OCR por página, cuadros, fuzzy matching de nombres completos, validación de
-multipart y admisión HTTP por proceso. `app/models/schemas.py` no cambió.
+**Scope:** real `POST /api/extract` endpoint, page-local association of spans
+with OCR words, bounding boxes, full-name fuzzy matching, multipart validation,
+and per-process HTTP admission. `app/models/schemas.py` was unchanged.
 
-### Construcción y batería completa
+### Build and full test suite
 
 ```bash
 docker compose config --quiet
@@ -1023,26 +1023,25 @@ git diff --check
 git diff -- app/models/schemas.py
 ```
 
-**Resultado:** imagen construida; `collected 264 items` → **`264 passed in
-42.53s`**. Los comandos de configuración y `git diff` terminaron sin salida.
+**Result:** image built; `collected 264 items` → **`264 passed in 42.53s`**.
+Configuration and `git diff` commands completed without output.
 
-La batería cubre posiciones repetidas y multipágina, palabras cercanas pero no
-relacionadas, límites y validación de coordenadas, coincidencia de cadena completa,
-acentos y umbral. Comprueba errores, archivo corrupto o protegido, multipart
-incompleto, campos mayores de 1 MiB, exceso de páginas, límites de longitud y trabajo de comparación,
-rechazo antes de leer cuando no hay capacidad,
-uploads fragmentados con `Content-Length` ausente o falso, timeout y cierre de
-temporales. Una prueba usa el endpoint real con OCR y NER reales en el PDF de
-ejemplo; otra comprueba el centro de los cuadros en dos páginas escaneadas
-sintéticas contra posiciones conocidas; otra verifica un escaneo rotado y
-recortado. `/health` se probó mientras el endpoint
-esperaba un NER simulado. El parser específico corrige el `400` documentado en
-la etapa anterior: los campos excesivos probados responden `413`.
+The suite covers repeated and multipage occurrences, nearby but unrelated words,
+coordinate limits and validation, full-string matching, accents, and the
+threshold. It checks errors, corrupt or protected files, incomplete multipart
+forms, fields larger than 1 MiB, page-count overflow, length and comparison-work
+limits, rejection before reading when capacity is unavailable, chunked uploads
+with missing or false `Content-Length`, timeouts, and temporary-file cleanup. One
+test uses the real endpoint with real OCR and NER on the sample PDF; another
+checks box centers against known positions on two synthetic scanned pages; a
+third checks a rotated and cropped scan. `/health` was tested while the endpoint
+was waiting on simulated NER. The dedicated parser fixes the `400` documented in
+the previous milestone: the tested oversized fields return `413`.
 
-### Compose y HTTP reales, aislados
+### Isolated real Compose and HTTP checks
 
-Para no reiniciar los contenedores del usuario se utilizó un proyecto Compose
-distinto y un volumen nuevo únicamente para esta comprobación:
+To avoid restarting the user's containers, a separate Compose project and a new
+volume were used solely for this check:
 
 ```bash
 APP_PORT=18087 docker compose -p hito3verify20261115 up --build -d
@@ -1059,20 +1058,20 @@ curl --fail --silent --show-error --max-time 180 -H 'Transfer-Encoding: chunked'
 APP_PORT=18087 docker compose -p hito3verify20261115 down --volumes
 ```
 
-**Salida relevante:** ambos servicios estuvieron activos; `/health` devolvió
-`{"status":"ok"}`; extracción HTTP y chunked devolvieron páginas `[0, 1]` y
-22 apariciones; la primera devolvió una coincidencia para `Thomas Muller` con
-puntuación `1.0`. Al terminar se eliminaron únicamente los contenedores, red y
-volumen creados para el proyecto temporal. El Compose preexistente no se reinició.
+**Relevant output:** both services were running; `/health` returned
+`{"status":"ok"}`; regular and chunked HTTP extraction returned pages `[0, 1]`
+and 22 occurrences; the first request returned a match for `Thomas Muller` with
+score `1.0`. At the end, only the containers, network, and volume created for the
+temporary project were removed. The pre-existing Compose project was not restarted.
 
-### Evidencia para revisión visual humana
+### Evidence for human visual review
 
-Se generó `docs_dev/meeting_minutes_names_visual.pdf` a partir de la respuesta
-del endpoint real y del PDF de ejemplo. El destino se abrió en modo exclusivo para
-evitar sobrescribir un archivo existente. Se dibujaron **12 cuadros en la página 0
-y 10 en la página 1**; un span se omitió por no poder asociarlo con seguridad.
-La copia permanece fuera de Git. **La revisión humana sigue pendiente** y se
-registra como MT-002 en [MANUAL_TEST_LOG.md](MANUAL_TEST_LOG.md).
+`docs_dev/meeting_minutes_names_visual.pdf` was generated from the real endpoint
+response and the sample PDF. The destination was opened exclusively to avoid
+overwriting an existing file. **12 boxes were drawn on page 0 and 10 on page 1**;
+one span was omitted because it could not be safely associated. The copy remains
+outside Git. **Human review is still pending** and is recorded as MT-002 in
+[MANUAL_TEST_LOG.md](MANUAL_TEST_LOG.md).
 
 ```bash
 docker run --rm --network none -i --user "$(id -u):$(id -g)" \
@@ -1110,54 +1109,53 @@ print('fuzzy matches:', len(result['fuzzy_matches']))
 PY
 ```
 
-**Limitaciones:** el modelo NER puede omitir personas o clasificar texto que no
-es una persona; las heurísticas geométricas también pueden omitir ubicaciones.
-La admisión es por proceso, no global; falta calibración bajo carga real. La
-prueba visual de nombres completos aún no ha sido aprobada por una persona.
-RAG e ingestión no forman parte de este hito.
+**Limitations:** the NER model may miss people or classify non-person text as a
+person; geometric heuristics may also omit locations. Admission is per process,
+not global; calibration under real load remains. The full-name visual test has
+not yet been approved by a person. RAG and ingestion are outside this milestone.
 
-## 2026-11-16 — Verificaciones reales compartidas
+## 2026-11-16 — Shared real-world smoke checks
 
-**Entorno:** Docker Desktop en macOS ARM64; imagen Linux construida desde el
-Dockerfile del proyecto, con Tesseract y el modelo spaCy instalados.
+**Environment:** Docker Desktop on macOS ARM64; Linux image built from the
+project Dockerfile, with Tesseract and the spaCy model installed.
 
-**Objetivo:** verificar los scripts compartidos en `scripts/smoke/` sin mocks y
-sin iniciar ni reiniciar los servicios Compose existentes.
+**Objective:** verify the shared scripts in `scripts/smoke/` without mocks and
+without starting or restarting the existing Compose services.
 
 ```bash
 docker build -t document-intelligence-smoke:local .
 bash -n scripts/smoke/ejecutar.sh
 bash scripts/smoke/ejecutar.sh --help
-bash scripts/smoke/ejecutar.sh todo
+bash scripts/smoke/ejecutar.sh all
 ```
 
-**Resultado:** la imagen se construyó y `todo` pasó. Los componentes localizaron
-22 apariciones y omitieron un span por asociación insegura; se obtuvo una pareja
-fuzzy exacta para `Thomas Muller`. Por HTTP real, `/health` y los casos válidos
-respondieron `200`; JSON inválido `422`, contenido no PDF `400` y campo `names`
-excesivo `413`. Una lista vacía no impidió extraer nombres. En el escaneo
-sintético recortado y rotado, el centro del cuadro detectado cayó en la posición
-conocida. Los contenedores temporales se eliminaron.
+**Result:** the image built and `all` passed. The component checks located 22
+occurrences and omitted one span because its association was unsafe; they found
+one exact fuzzy pair for `Thomas Muller`. Over real HTTP, `/health` and valid
+cases returned `200`; invalid JSON returned `422`, non-PDF content `400`, and an
+oversized `names` field `413`. An empty list did not prevent name extraction. On
+the synthetic cropped and rotated scan, the detected box center fell within the
+known position. Temporary containers were removed.
 
-Se comprobó también `componentes` desde un directorio externo usando otra imagen
-local mediante `SMOKE_IMAGE`; pasó. Un argumento desconocido devolvió código `2`
-y una imagen inexistente devolvió `1`. Una interrupción `SIGINT` controlada de
-`http` devolvió `130` y dejó eliminado el contenedor temporal creado. Los
-servicios Compose preexistentes siguieron activos.
+`components` was also checked from an external directory using another local image
+through `SMOKE_IMAGE`; it passed. An unknown argument returned exit code `2`, and
+a missing image returned `1`. A controlled `SIGINT` interruption of `http`
+returned `130` and removed the temporary container it had created. The
+pre-existing Compose services remained running.
 
-**Limitaciones:** la muestra tiene nombres conocidos y los textos de fuzzy y el
-escaneo rotado incluyen datos sintéticos; los servicios que los procesan son
-reales. Estas comprobaciones no prueban Compose, Qdrant, carga ni precisión
-general. Hay solapamiento con las pruebas de integración que usan `TestClient`,
-pero el script HTTP levanta Uvicorn y usa loopback real. En esa comprobación no se
-repitió la batería de 264 pruebas; la revisión visual humana MT-002 sigue pendiente.
+**Limitations:** the sample contains known names, and the fuzzy strings and
+rotated scan use synthetic data; the services processing them are real. These
+checks do not test Compose, Qdrant, load, or general accuracy. They overlap with
+integration tests using `TestClient`, but the HTTP script starts Uvicorn and uses
+real loopback. The 264-test suite was not rerun during this check; human visual
+review MT-002 remains pending.
 
-### Repetición de la batería antes de los commits
+### Rerunning the suite before commits
 
-Se construyó una imagen temporal con pytest a partir de la imagen de smoke. La
-instalación de pytest durante la construcción requirió acceso a dependencias;
-las pruebas se ejecutaron después en un contenedor sin red externa, montando
-código, pruebas y PDF en solo lectura:
+A temporary image with pytest was built from the smoke image. Installing pytest
+during the build required access to package dependencies; the tests were then run
+in a container without external network access, with source, tests, and PDFs
+mounted read-only:
 
 ```bash
 docker build -t document-intelligence-pytest-verify-20261116:local - <<'EOF'
@@ -1173,31 +1171,31 @@ docker run --rm --network none \
   -m pytest -p no:cacheprovider /tests/unit /tests/integration
 ```
 
-**Resultado:** `collected 264 items` → **`264 passed in 44.21s`**. La repetición
-no sustituye la revisión visual humana MT-002 y no inició ni reinició Compose.
+**Result:** `collected 264 items` → **`264 passed in 44.21s`**. This rerun does not
+replace human visual review MT-002 and did not start or restart Compose.
 
-Para comprobar los commits intermedios sin usar los cambios pendientes del árbol
-de trabajo, se extrajo cada revisión con `git archive` en otro contenedor sin red:
-en `b3b5bdf`, `test_bbox_and_fuzzy.py` pasó sus **17 pruebas**; en `673bc8b`, las
-pruebas de cuadros, configuración, contratos, OCR asíncrono y límites HTTP pasaron
-**121 pruebas**. Estas baterías incluyen pruebas unitarias con componentes simulados.
+To check intermediate commits without using pending working-tree changes, each
+revision was extracted with `git archive` in another offline container: at
+`b3b5bdf`, `test_bbox_and_fuzzy.py` passed its **17 tests**; at `673bc8b`, the
+bounding-box, configuration, contract, asynchronous OCR, and HTTP-limit tests
+passed **121 tests**. These suites include unit tests with simulated components.
 
-## Plantilla para próximas ejecuciones
+## Template for future runs
 
 ````markdown
-## AAAA-MM-DD — Hito o cambio
-**Entorno:** sistema, arquitectura y versiones relevantes.
-**Objetivo:** qué se intenta comprobar.
-**Comando:**
+## YYYY-MM-DD — Milestone or change
+**Environment:** system, architecture, and relevant versions.
+**Objective:** what is being checked.
+**Command:**
 ```bash
-comando ejecutado
+command executed
 ```
-**Salida observada:**
+**Observed output:**
 ```text
-fragmento relevante, sin secretos
+relevant excerpt, no secrets
 ```
-**Resultado:** correcto / incorrecto / parcial.
-**Diagnóstico y solución:** si hubo errores, cómo se investigaron y corrigieron;
-si siguen pendientes, indicarlo explícitamente.
-**Limitaciones / pendientes:** qué no se probó.
+**Result:** passed / failed / partial.
+**Diagnosis and fix:** how errors were investigated and corrected; explicitly
+state anything that remains unresolved.
+**Limitations / pending work:** what was not tested.
 ````

@@ -1,95 +1,97 @@
-# Bitácora de pruebas manuales
+# Manual test log
 
-Este documento registra pruebas cuyo **criterio de aceptación lo determina una
-persona** mediante inspección directa. Una herramienta puede generar o mostrar
-los datos, pero una evaluación de IA no sustituye la revisión ni la aprobación
-humana. Registrar únicamente observaciones comunicadas por quien revisó; no
-suponer resultados ni incluir datos sensibles.
+This document records tests whose **acceptance criterion is determined by a
+person** through direct inspection. A tool may generate or display the data,
+but an AI evaluation does not replace human review or approval. Record only
+observations reported by the reviewer; do not assume results or include
+sensitive data.
 
-Las pruebas automatizadas, comandos y resultados técnicos se registran por
-separado en [TEST_LOG.md](TEST_LOG.md).
+Automated tests, commands, and technical results are recorded separately in
+[TEST_LOG.md](TEST_LOG.md).
 
-## MT-001 — Ubicación visual de palabras OCR
+## MT-001 — Visual placement of OCR words
 
-| Campo | Valor |
+| Field | Value |
 |---|---|
-| Fecha del registro | 2026-11-15 |
-| Persona revisora | Usuario del proyecto; nombre no proporcionado |
-| Resultado | **Aprobado por la persona revisora**, para el documento inspeccionado |
-| Documento original | `sample_pdfs/meeting_minutes.pdf` |
-| Evidencia visual | `docs_dev/meeting_minutes_ocr_visual.pdf`, copia local excluida de Git |
-| Alcance | Cuadros de palabras OCR en las dos páginas |
+| Record date | 2026-11-15 |
+| Reviewer | Project user; name not provided |
+| Result | **Approved by the reviewer**, for the inspected document |
+| Original document | `sample_pdfs/meeting_minutes.pdf` |
+| Visual evidence | `docs_dev/meeting_minutes_ocr_visual.pdf`, local copy excluded from Git |
+| Scope | OCR word boxes on both pages |
 
-### Preparación y separación de responsabilidades
+### Preparation and separation of responsibilities
 
-El servicio OCR generó los cuadros y se utilizó un script preparado con ayuda
-del asistente para dibujarlos sobre una copia del PDF. La **evaluación registrada
-a continuación es la observación comunicada por el usuario**, no una aprobación
-automática ni un resultado inferido por IA. El procedimiento de generación y el
-recuento técnico están en [TEST_LOG.md](TEST_LOG.md#2026-11-15--revisión-visual-preliminar-de-cuadros-ocr).
+The OCR service generated the boxes, and a script prepared with the assistant's
+help was used to draw them on a copy of the PDF. The **evaluation recorded below
+is the observation reported by the user**, not an automated approval or a result
+inferred by AI. The generation procedure and technical count are in
+[TEST_LOG.md](TEST_LOG.md#2026-11-15--preliminary-visual-review-of-ocr-boxes).
 
-### Procedimiento manual
+### Manual procedure
 
-1. Abrir la copia local con los cuadros rojos superpuestos.
-2. Revisar visualmente las dos páginas, con zoom cuando sea necesario.
-3. Comprobar que los cuadros cubran las palabras sin cortarlas ni desplazarse.
-4. Revisar los nombres visibles y buscar palabras sin cuadro o cuadros en vacío.
+1. Open the local copy with the red boxes overlaid.
+2. Visually inspect both pages, zooming in when necessary.
+3. Verify that the boxes cover the words without clipping them or becoming
+   misaligned.
+4. Review the visible names and look for words without boxes or boxes over
+   empty space.
 
-### Observaciones comunicadas por la persona revisora
+### Observations reported by the reviewer
 
-- Los cuadros cubren las palabras y no las cortan, aunque no todos tienen el
-  mismo tamaño.
-- Los nombres visibles revisados, incluidos los mencionados durante la prueba,
-  están correctamente encerrados.
-- Las palabras están rodeadas por rectángulos, incluso cuando incluyen signos
-  como `-`, `,`, `:` o `.`.
+- The boxes cover the words and do not clip them, although not all of them are
+  the same size.
+- The visible names reviewed, including those mentioned during the test, are
+  correctly enclosed.
+- The words are surrounded by rectangles, even when they include symbols such
+  as `-`, `,`, `:` or `.`.
 
-### Limitaciones
+### Limitations
 
-- Se revisó un PDF de ejemplo; esto no valida todos los documentos ni todos los
-  casos de rotación o recorte.
-- Los rectángulos corresponden a **palabras OCR**. Esta revisión anterior no
-  valida los cuadros de nombres completos que se implementaron posteriormente.
-- La inspección visual de cuadros no verifica por sí sola que el texto reconocido
-  coincida carácter por carácter ni establece una métrica de precisión.
+- One sample PDF was reviewed; this does not validate all documents or all
+  rotation or cropping cases.
+- The rectangles correspond to **OCR words**. This earlier review does not
+  validate the full-name boxes that were implemented later.
+- Visual inspection of boxes alone does not verify that the recognized text
+  matches character by character, nor does it establish an accuracy metric.
 
-## MT-002 — Ubicación visual de nombres completos
+## MT-002 — Visual placement of full names
 
-| Campo | Valor |
+| Field | Value |
 |---|---|
-| Fecha de preparación | 2026-11-15 |
-| Persona revisora | Pendiente |
-| Resultado | **Pendiente de revisión humana** |
-| Documento original | `sample_pdfs/meeting_minutes.pdf` |
-| Evidencia visual | `docs_dev/meeting_minutes_names_visual.pdf`, copia local excluida de Git |
-| Alcance previsto | Cuadros de nombres completos devueltos por `/api/extract` en las dos páginas |
+| Preparation date | 2026-11-15 |
+| Reviewer | Pending |
+| Result | **Pending human review** |
+| Original document | `sample_pdfs/meeting_minutes.pdf` |
+| Visual evidence | `docs_dev/meeting_minutes_names_visual.pdf`, local copy excluded from Git |
+| Intended scope | Full-name boxes returned by `/api/extract` on both pages |
 
-### Procedimiento propuesto
+### Proposed procedure
 
-1. Abrir la copia local con los cuadros rojos y compararla con el PDF original.
-2. Revisar ambas páginas: cada cuadro debe rodear el nombre que corresponde sin
-   incluir nombres lejanos ni quedar desplazado. Observar posibles omisiones y
-   falsos positivos del modelo NER.
-3. Comunicar los resultados de la revisión para registrarlos aquí. La generación
-   de la evidencia y las pruebas automatizadas **no** constituyen una aprobación.
+1. Open the local copy with the red boxes and compare it with the original PDF.
+2. Review both pages: each box must surround the corresponding name without
+   including distant names or becoming misaligned. Look for possible omissions
+   and false positives from the NER model.
+3. Report the review results so they can be recorded here. Generating the
+   evidence and running automated tests **do not** constitute approval.
 
-El archivo fue generado a partir de la respuesta del endpoint real; el comando y
-recuento técnico se registran en [TEST_LOG.md](TEST_LOG.md). La copia permanece
-fuera de Git y no garantiza el comportamiento en otros documentos ni rotaciones.
+The file was generated from the real endpoint response; the command and
+technical count are recorded in [TEST_LOG.md](TEST_LOG.md). The copy remains
+outside Git and does not guarantee behavior for other documents or rotations.
 
-## Plantilla para próximas pruebas manuales
+## Template for future manual tests
 
 ```markdown
-## MT-XXX — Nombre de la prueba
-- Fecha:
-- Persona revisora:
-- Entorno y versión o commit:
-- Objetivo y alcance:
-- Herramientas utilizadas para preparar y visualizar la evidencia:
-- Pasos realizados por la persona:
-- Resultado esperado:
-- Observaciones comunicadas por la persona:
-- Resultado: aprobado / fallido / parcial / pendiente.
-- Evidencia disponible y ubicación:
-- Limitaciones y acciones pendientes:
+## MT-XXX — Test name
+- Date:
+- Reviewer:
+- Environment and version or commit:
+- Objective and scope:
+- Tools used to prepare and view the evidence:
+- Steps performed by the reviewer:
+- Expected result:
+- Observations reported by the reviewer:
+- Result: approved / failed / partial / pending.
+- Available evidence and location:
+- Limitations and outstanding actions:
 ```

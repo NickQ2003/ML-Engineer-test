@@ -1,57 +1,56 @@
-# Medición preliminar del límite de píxeles OCR
+# Preliminary measurement of the OCR pixel limit
 
-**Fecha:** 2026-11-15
+**Date:** 2026-11-15
 
-**Estado:** medición exploratoria; el límite de producción sigue pendiente de
-validación con recursos y documentos representativos del despliegue.
+**Status:** exploratory measurement; the production limit still requires
+validation with resources and documents representative of the deployment.
 
-## Objetivo y entorno
+## Objective and environment
 
-Evaluar si el valor actual `MAX_PAGE_PIXELS=20000000` es razonable para el
-procesamiento OCR de hasta dos documentos simultáneos. No se cambió el valor.
+Assess whether the current value `MAX_PAGE_PIXELS=20000000` is reasonable for
+OCR processing of up to two concurrent documents. The value was not changed.
 
-- Host: macOS ARM64 con Docker Desktop; memoria informada por Docker: 8.218.316.800 bytes.
-- Cada medición se ejecutó en un contenedor Linux ARM64 nuevo y aislado, con
+- Host: macOS ARM64 with Docker Desktop; memory reported by Docker: 8,218,316,800 bytes.
+- Each measurement ran in a fresh, isolated Linux ARM64 container with
   `--memory=2g --memory-swap=2g --cpus=2 --pids-limit=64`.
-- DPI: 200; dos workers OCR cuando se indica concurrencia de 2.
-- Se leyó `/sys/fs/cgroup/memory.peak`, que corresponde al pico del contenedor,
-  incluidos los procesos hijos y la memoria contabilizada por el cgroup. No es
-  solo la memoria RSS de Python.
-- El contenedor de medición no incluyó el servidor Uvicorn, Qdrant ni modelos de
-  NER/embeddings cargados. El límite de 2 GiB fue solo para el experimento; no
-  se configuró ese límite en `docker-compose.yml`.
+- DPI: 200; two OCR workers when concurrency is specified as 2.
+- `/sys/fs/cgroup/memory.peak` was read; it corresponds to the container peak,
+  including child processes and memory accounted for by the cgroup. It is not
+  just Python RSS memory.
+- The measurement container did not include the Uvicorn server, Qdrant, or
+  loaded NER/embedding models. The 2 GiB limit was only for the experiment; that
+  limit was not configured in `docker-compose.yml`.
 
-## Resultados observados
+## Observed results
 
-| Entrada | Píxeles estimados por página | OCR simultáneos | Pico del contenedor | Duración |
+| Input | Estimated pixels per page | Concurrent OCR jobs | Container peak | Duration |
 |---|---:|---:|---:|---:|
-| Página sintética vectorial, 800 × 800 puntos | 4.946.176 | 1 | 204,2 MiB | 1,25 s |
-| Página sintética vectorial, 1600 × 1600 puntos, texto escaso | 19.766.916 | 1 | 455,1 MiB | 1,97 s |
-| Misma página, texto escaso | 19.766.916 | 2 | 854,2 MiB | 2,64 s |
-| Página sintética vectorial, 3 columnas × 40 líneas | 19.766.916 | 2 | 869,5 MiB | 9,42 s |
-| Copia rasterizada de la página anterior, similar a un escaneo | 19.766.916 | 2 | 985,3 MiB | 9,76 s |
-| `meeting_minutes.pdf`, 2 páginas | Aproximadamente 3,75 millones por página | 2 | 364,3 MiB | 3,95 s |
+| Vector-based synthetic page, 800 × 800 points | 4,946,176 | 1 | 204.2 MiB | 1.25 s |
+| Vector-based synthetic page, 1600 × 1600 points, sparse text | 19,766,916 | 1 | 455.1 MiB | 1.97 s |
+| Same page, sparse text | 19,766,916 | 2 | 854.2 MiB | 2.64 s |
+| Vector-based synthetic page, 3 columns × 40 lines | 19,766,916 | 2 | 869.5 MiB | 9.42 s |
+| Rasterized copy of the previous page, similar to a scan | 19,766,916 | 2 | 985.3 MiB | 9.76 s |
+| `meeting_minutes.pdf`, 2 pages | Approximately 3.75 million per page | 2 | 364.3 MiB | 3.95 s |
 
-En el caso rasterizado se reconocieron 840 palabras por trabajo. La imagen
-insertada medía `4445 × 4445` píxeles; la estimación conservadora del servicio
-incluye un píxel adicional por eje. El pico de 985,3 MiB equivale al 48,1 % del
-límite experimental de 2 GiB, **no** al consumo máximo garantizado del servicio.
+In the rasterized case, 840 words were recognized per job. The embedded image
+measured `4445 × 4445` pixels; the service's conservative estimate includes one
+additional pixel per axis. The 985.3 MiB peak equals 48.1% of the experimental
+2 GiB limit, **not** the service's guaranteed maximum consumption.
 
-## Decisión provisional
+## Provisional decision
 
-Mantener por ahora el valor predeterminado de **20 millones de píxeles**, porque
-estas ejecuciones completaron dos trabajos cerca del límite sin superar el
-contenedor experimental de 2 GiB. No considerarlo calibrado para producción: se
-necesitan las restricciones reales de memoria, pruebas con escaneos más diversos
-y densos, orientación de baja confianza que active la segunda pasada, varios
-documentos y la aplicación completa con sus modelos y dependencias.
+Keep the default value of **20 million pixels** for now, because these runs
+completed two jobs near the limit without exceeding the experimental 2 GiB
+container. Do not consider it calibrated for production: actual memory
+constraints, tests with more diverse and dense scans, low-confidence orientation
+that triggers the second pass, multiple documents, and the full application with
+its models and dependencies are needed.
 
-Si el entorno tiene menos memoria o aumenta el número de workers, revisar
-conjuntamente `MAX_PAGE_PIXELS`, `OCR_MAX_CONCURRENT_JOBS` y el límite de memoria
-del contenedor. Los límites de concurrencia actuales son por proceso de la
-aplicación, no globales.
+If the environment has less memory or the number of workers increases, review
+`MAX_PAGE_PIXELS`, `OCR_MAX_CONCURRENT_JOBS`, and the container memory limit
+together. Current concurrency limits are per application process, not global.
 
-## Comprobación del límite por encima del umbral
+## Checking the limit above the threshold
 
 ```bash
 docker run --rm -i --memory=2g --memory-swap=2g --cpus=2 --pids-limit=64 --entrypoint python ml-engineer-test-app:latest - <<'PY'
@@ -69,18 +68,18 @@ else:
 PY
 ```
 
-**Salida observada:**
+**Observed output:**
 
 ```text
 Expected rejection: PDFPageTooLargeError Page 0 exceeds the rendered-pixel limit
 ```
 
-## Reproducción: página sintética vectorial
+## Reproduction: vector-based synthetic page
 
-El siguiente comando reproduce la configuración densa con dos trabajos. Cambiar
-`BENCH_SIDE_PT`, `BENCH_JOBS`, `BENCH_LINES` y `BENCH_COLS` para los otros casos;
-usar un contenedor nuevo por medición para que `memory.peak` no conserve el pico
-de un caso anterior.
+The following command reproduces the dense configuration with two jobs. Change
+`BENCH_SIDE_PT`, `BENCH_JOBS`, `BENCH_LINES`, and `BENCH_COLS` for the other
+cases; use a fresh container for each measurement so that `memory.peak` does not
+retain the peak from a previous case.
 
 ```bash
 docker run --rm -i --memory=2g --memory-swap=2g --cpus=2 --pids-limit=64 \
@@ -129,13 +128,13 @@ print(json.dumps({
 PY
 ```
 
-**Salida relevante observada para el caso denso:**
+**Relevant observed output for the dense case:**
 
 ```json
 {"side_points":1600,"dpi":200,"jobs":2,"lines":40,"columns":3,"estimated_pixels":19766916,"pdf_bytes":26035,"word_counts":[840,840],"elapsed_seconds":9.42,"cgroup_peak_bytes":911765504}
 ```
 
-## Reproducción: PDF de ejemplo
+## Reproduction: sample PDF
 
 ```bash
 docker run --rm -i --memory=2g --memory-swap=2g --cpus=2 --pids-limit=64 \
@@ -161,18 +160,18 @@ print(json.dumps({'document': 'meeting_minutes.pdf', 'jobs': 2, 'words_by_page':
 PY
 ```
 
-**Salida observada:**
+**Observed output:**
 
 ```json
 {"document":"meeting_minutes.pdf","jobs":2,"words_by_page":[[149,134],[149,134]],"elapsed_seconds":3.95,"cgroup_peak_bytes":382009344}
 ```
 
-## Reproducción: página rasterizada cercana al límite
+## Reproduction: rasterized page near the limit
 
-Se utilizó un directorio temporal vacío, representado aquí por `BENCH_DIR`. El
-archivo sintético no contiene datos reales y no debe sobrescribir uno existente.
-Su creación ocurre en **otro contenedor**, para no contaminar el pico del
-contenedor que ejecuta OCR.
+An empty temporary directory, represented here by `BENCH_DIR`, was used. The
+synthetic file contains no real data and must not overwrite an existing file.
+It is created in **another container** to avoid contaminating the peak of the
+container running OCR.
 
 ```bash
 BENCH_DIR="$(mktemp -d)"
@@ -202,8 +201,8 @@ print('pdf_bytes:', out.stat().st_size)
 PY
 ```
 
-**Salida observada:** `pixel_dimensions: 4445 4445`; `pdf_bytes: 625481`.
-Después, en un contenedor nuevo:
+**Observed output:** `pixel_dimensions: 4445 4445`; `pdf_bytes: 625481`.
+Then, in a fresh container:
 
 ```bash
 docker run --rm -i --memory=2g --memory-swap=2g --cpus=2 --pids-limit=64 \
@@ -229,7 +228,7 @@ print(json.dumps({'document': 'synthetic_scanned_20m.pdf', 'jobs': 2, 'words_by_
 PY
 ```
 
-**Salida observada:**
+**Observed output:**
 
 ```json
 {"document":"synthetic_scanned_20m.pdf","jobs":2,"words_by_page":[[840],[840]],"elapsed_seconds":9.76,"cgroup_peak_bytes":1033195520}

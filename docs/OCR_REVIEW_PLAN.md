@@ -1,190 +1,193 @@
-# Plan de decisiones — hallazgos del OCR
+# Decision plan — OCR findings
 
-**Fecha:** 2026-11-15
+**Date:** 2026-11-15
 
-**Estado:** correcciones e integración HTTP implementadas; límites globales y
-calibración de producción pendientes.
+**Status:** fixes and HTTP integration implemented; global limits and production
+calibration pending.
 
-**Alcance:** servicio OCR y su ejecución asíncrona, antes de integrarlos en
-`/api/extract`. Los puntos siguientes conservan la evidencia y decisiones de la
-revisión; el estado de implementación se resume en la tabla.
+**Scope:** OCR service and its asynchronous execution, before their integration
+into `/api/extract`. The following points preserve the review evidence and
+decisions; implementation status is summarized in the table.
 
-## Objetivo
+## Objective
 
-Corregir los problemas que pueden afectar la ubicación de nombres, los recursos
-y la confidencialidad de los documentos, conservando el contrato HTTP exigido
-por la prueba. Las alternativas indicadas son recomendaciones para implementar y
-validar; cualquier cambio de diseño debe registrarse en `DECISIONS.md`.
+Fix the issues that can affect name placement, resources, and document
+confidentiality while preserving the HTTP contract required by the test. The
+indicated alternatives are recommendations to implement and validate; any
+design change must be recorded in `DECISIONS.md`.
 
-## Resumen y orden propuesto
+## Summary and proposed order
 
-| Orden | ID | Prioridad | Hallazgo | Estado |
+| Order | ID | Priority | Finding | Status |
 |---|---|---|---|---|
-| 1 | R-01 | Alta | Un PDF pequeño puede producir una imagen enorme | Corregido en servicio; umbral por calibrar |
-| 2 | R-02 | Alta | La cancelación directa puede dejar Tesseract y archivos temporales | Corregido en cierre/timeout controlados en POSIX |
-| 3 | R-03 | Alta | La rotación de metadatos puede corregir una imagen ya girada | Mitigado mediante heurística; precisión no garantizada |
-| 4 | R-04 | Media | El límite de procesos no limita la cola ni las copias de PDF | Parcial: admisión HTTP por proceso; falta límite global |
-| 5 | R-05 | Media | El proveedor con caché puede crear varias instancias al inicio concurrente | Corregido en ciclo de vida y conectado al endpoint |
-| 6 | R-06 | Baja | `LOG_LEVEL` se configura pero no se aplica | Corregido y probado |
+| 1 | R-01 | High | A small PDF can produce a huge image | Fixed in the service; threshold to be calibrated |
+| 2 | R-02 | High | Direct cancellation can leave Tesseract and temporary files behind | Fixed in controlled shutdown/timeout handling on POSIX |
+| 3 | R-03 | High | Metadata rotation can correct an image that has already been rotated | Mitigated using a heuristic; accuracy not guaranteed |
+| 4 | R-04 | Medium | The process limit does not bound the queue or PDF copies | Partial: per-process HTTP admission; global limit still needed |
+| 5 | R-05 | Medium | The cached provider can create multiple instances during concurrent startup | Fixed in the lifecycle and connected to the endpoint |
+| 6 | R-06 | Low | `LOG_LEVEL` is configured but not applied | Fixed and tested |
 
-`/api/extract` aplica admisión por proceso antes del parseo multipart, límites de
-bytes y plazo de lectura, y utiliza la dependencia OCR compartida. Los límites
-siguen siendo por proceso, no globales, y no hay garantía de limpieza ante una
-caída abrupta de toda la máquina.
+`/api/extract` applies per-process admission before multipart parsing, byte
+limits and a read deadline, and uses the shared OCR dependency. The limits
+remain per process, not global, and no cleanup is guaranteed if the entire
+machine crashes abruptly.
 
-## Implementación posterior a la revisión
+## Post-review implementation
 
-- **R-01:** `MAX_PAGE_PIXELS=20000000` por defecto; se estima el área antes de
-  renderizar y se rechazan páginas excesivas con `PDFPageTooLargeError`. Una
-  medición exploratoria respalda mantenerlo provisionalmente; aún debe calibrarse
-  para el despliegue real. Ver [mediciones](OCR_MEMORY_CALIBRATION.md).
-- **R-02:** subprocessos POSIX supervisados en grupos separados y directorios
-  temporales privados. Una solicitud cancelada no abandona un trabajo ya iniciado;
-  el timeout total o el cierre controlado terminan el grupo. Pruebas con un
-  subprocesso simulado que ignora `SIGTERM` verifican que no quede activo ni
-  queden temporales. Una caída abrupta o un `SIGKILL` del contenedor no ofrece
-  garantías de limpieza; falta verificar el comportamiento en el endpoint real.
-- **R-03:** OCR en orientación visible y segunda pasada si la confianza media
-  es inferior al umbral configurable; se elige la mayor confianza. Se prueban
-  OCR real y cuadros con escaneos en ambas orientaciones, con recorte y cuatro
-  rotaciones. La confianza es una heurística, no una garantía de precisión.
-- **R-04:** límites por proceso de trabajos activos y en cola, espera máxima,
-  timeout de lectura y `extract_stream_async()` que adquiere admisión antes de
-  leer. El endpoint HTTP limita por proceso las solicitudes admitidas antes del
-  parseo multipart, el tamaño completo y el tiempo de carga. El exceso de capacidad
-  se rechaza con `503`; no existe un límite global entre workers o réplicas.
-- **R-05:** el servicio se crea en el ciclo de vida FastAPI y se obtiene por
-  `app.api.dependencies.get_ocr_service`, usada por `/api/extract`. Se prueba la
-  instancia compartida y el endpoint real con OCR y NER.
-- **R-06:** se valida y aplica `LOG_LEVEL` a los loggers de aplicación y Uvicorn;
-  los logs propios de aplicación se emiten como JSON. Se prueba el nivel y la salida.
+- **R-01:** `MAX_PAGE_PIXELS=20000000` by default; the area is estimated before
+  rendering, and oversized pages are rejected with `PDFPageTooLargeError`. An
+  exploratory measurement supports keeping it provisionally; it must still be
+  calibrated for the actual deployment. See [measurements](OCR_MEMORY_CALIBRATION.md).
+- **R-02:** supervised POSIX subprocesses in separate groups and private
+  temporary directories. A canceled request does not abandon a job already
+  started; the overall timeout or controlled shutdown terminates the group.
+  Tests with a simulated subprocess that ignores `SIGTERM` verify that it does
+  not remain active and no temporary files remain. An abrupt crash or a
+  `SIGKILL` of the container offers no cleanup guarantees; behavior on the real
+  endpoint still needs verification.
+- **R-03:** OCR in the visible orientation and a second pass if mean confidence
+  is below the configurable threshold; the higher confidence is selected. Real
+  OCR and boxes are tested with scans in both orientations, with cropping and
+  four rotations. Confidence is a heuristic, not an accuracy guarantee.
+- **R-04:** per-process limits on active and queued jobs, maximum wait, read
+  timeout, and `extract_stream_async()` that acquires admission before reading.
+  The HTTP endpoint limits admitted requests per process before multipart
+  parsing, the full size, and upload time. Requests beyond capacity are rejected
+  with `503`; there is no global limit across workers or replicas.
+- **R-05:** the service is created in the FastAPI lifecycle and retrieved through
+  `app.api.dependencies.get_ocr_service`, used by `/api/extract`. The shared
+  instance and the real endpoint are tested with OCR and NER.
+- **R-06:** `LOG_LEVEL` is validated and applied to application and Uvicorn
+  loggers; the application's own logs are emitted as JSON. The level and output
+  are tested.
 
-## R-01 — Límite de píxeles renderizados
+## R-01 — Rendered-pixel limit
 
-**Evidencia:** un PDF de 522 bytes con una página de 10.000 × 10.000 puntos llegó
-al renderizado. A 200 DPI supone aproximadamente 771,6 millones de píxeles y
-2,31 GB para una sola copia RGB; no se realizó esa reserva durante la revisión.
+**Evidence:** a 522-byte PDF with a 10,000 × 10,000-point page reached rendering.
+At 200 DPI, this amounts to approximately 771.6 million pixels and 2.31 GB for a
+single RGB copy; that allocation was not performed during the review.
 
-**Decisión recomendada:** añadir un máximo configurable de píxeles por página.
-Calcular las dimensiones renderizadas, de forma conservadora, antes de llamar a
-`get_pixmap()`; rechazar páginas que excedan el límite con un error específico.
-Empezar evaluando un límite de 20 millones de píxeles y ajustarlo a la memoria
-real disponible, considerando que cada trabajo puede crear varias copias y que
-hay más de un proceso concurrente. El número definitivo requiere medición.
+**Recommended decision:** add a configurable maximum number of pixels per page.
+Conservatively calculate the rendered dimensions before calling `get_pixmap()`;
+reject pages that exceed the limit with a specific error. Start by evaluating a
+20-million-pixel limit and adjust it to the actual available memory, considering
+that each job can create several copies and that there is more than one
+concurrent process. The final number requires measurement.
 
-**Alternativa:** reducir automáticamente el DPI. Es menos predecible para la
-precisión del OCR; solo adoptarla si se define y prueba un mínimo aceptable.
+**Alternative:** automatically reduce the DPI. This is less predictable for OCR
+accuracy; adopt it only if an acceptable minimum is defined and tested.
 
-**Criterios de aceptación:**
+**Acceptance criteria:**
 
-- Una página enorme se rechaza antes de reservar la imagen.
-- Se prueban los límites, dimensiones no válidas y DPI configurables.
-- Los PDF de ejemplo siguen procesándose; se documenta el error de cara a HTTP.
+- A huge page is rejected before the image is allocated.
+- Limits, invalid dimensions, and configurable DPI are tested.
+- The sample PDFs are still processed; the HTTP-facing error is documented.
 
-## R-02 — Cancelación y limpieza de procesos
+## R-02 — Process cancellation and cleanup
 
-**Evidencia:** con `asyncio.Task.cancel()` se observó la terminación del proceso
-trabajador mientras un subprocesso simulado de Tesseract seguía activo y dos
-archivos temporales permanecían. La prueba actual cubre cancelación mediante
-AnyIO, no este caso. El subprocesso simulado se terminó al finalizar la prueba.
+**Evidence:** with `asyncio.Task.cancel()`, the worker process was observed to
+terminate while a simulated Tesseract subprocess remained active and two
+temporary files remained. The current test covers cancellation through AnyIO,
+not this case. The simulated subprocess was terminated when the test ended.
 
-**Decisión recomendada:** supervisar los trabajos fuera del ámbito de vida de
-una solicitud individual. Una solicitud cancelada mientras espera capacidad no
-debe iniciar OCR; si el trabajo ya empezó, mantenerlo supervisado hasta su fin o
-hasta un límite total explícito. Conservar el permiso de concurrencia mientras
-el trabajo siga vivo. Definir una estrategia de parada y limpieza del árbol de
-procesos y de un directorio temporal privado por trabajo, también ante cierre
-del servidor o terminación forzada del worker.
+**Recommended decision:** supervise jobs outside the lifetime of an individual
+request. A request canceled while waiting for capacity must not start OCR; if
+the job has already started, keep it supervised until completion or until an
+explicit overall limit. Retain the concurrency permit while the job remains
+alive. Define a shutdown and cleanup strategy for the process tree and a private
+temporary directory per job, including during server shutdown or forced worker
+termination.
 
-**Alternativa:** cancelar inmediatamente el trabajo. Requiere controlar la
-terminación de Tesseract y sus descendientes antes de liberar capacidad, además
-de limpiar temporales; matar solo el worker no es suficiente.
+**Alternative:** cancel the job immediately. This requires controlling the
+termination of Tesseract and its descendants before releasing capacity, as well
+as cleaning up temporary files; killing only the worker is not sufficient.
 
-**Criterios de aceptación:**
+**Acceptance criteria:**
 
-- Probar cancelación directa `asyncio.Task.cancel()`, cancelación AnyIO y tareas
-  canceladas en cola; no quedan subprocessos ni archivos temporales huérfanos.
-- Verificar que el límite de trabajos sigue respetándose durante cancelaciones.
-- Probar el comportamiento en cierre del servidor y documentar límites y
-  excepciones, sin afirmar garantías que no se puedan cumplir ante caída total.
-- Mantener un tiempo máximo razonable para el documento completo, además del
-  timeout individual de Tesseract por página.
+- Test direct `asyncio.Task.cancel()` cancellation, AnyIO cancellation, and
+  canceled queued tasks; no orphaned subprocesses or temporary files remain.
+- Verify that the job limit is still enforced during cancellations.
+- Test behavior during server shutdown and document limits and exceptions,
+  without claiming guarantees that cannot be met during a total crash.
+- Maintain a reasonable maximum time for the complete document, in addition to
+  the individual Tesseract timeout per page.
 
-## R-03 — Orientación de PDF y escaneo
+## R-03 — PDF and scan orientation
 
-**Evidencia:** un PDF con la imagen físicamente girada y metadatos que la hacen
-visible en posición correcta produjo `ALICE SMITH` al aplicar OCR a la página
-mostrada, pero el servicio devolvió texto incorrecto al deshacer la rotación.
+**Evidence:** a PDF with a physically rotated image and metadata that makes it
+visible in the correct orientation produced `ALICE SMITH` when OCR was applied
+to the displayed page, but the service returned incorrect text when undoing the
+rotation.
 
-**Decisión recomendada:** evaluar primero la página en su orientación visible y
-definir una alternativa de orientación cuando haya señales de baja calidad.
-Comparar las opciones de forma explícita y conservar la transformación que
-permita devolver los cuadros en puntos del recorte sin rotar. Una segunda pasada
-puede aumentar el tiempo y no garantiza que una puntuación de confianza detecte
-todos los errores; medir el comportamiento con ejemplos representativos.
+**Recommended decision:** first evaluate the page in its visible orientation and
+define an alternative orientation when there are signs of low quality. Compare
+the options explicitly and preserve the transformation that allows boxes to be
+returned in points within the unrotated crop. A second pass can increase the
+time, and a confidence score does not guarantee detection of all errors; measure
+behavior with representative examples.
 
-**Alternativas:** confiar siempre en metadatos o siempre en la imagen sin rotar.
-Las dos fallan en algunas combinaciones de orientación física y metadatos.
+**Alternatives:** always trust metadata or always trust the unrotated image.
+Both fail in some combinations of physical orientation and metadata.
 
-**Criterios de aceptación:**
+**Acceptance criteria:**
 
-- OCR real sobre contenido horizontal con metadatos de rotación y sobre imagen
-  físicamente girada cuya rotación de metadatos corrige la vista.
-- Comprobar texto y cuadros para 0°, 90°, 180° y 270°, con y sin recorte.
-- Mantener documentada la limitación respecto a inclinación arbitraria.
+- Real OCR on horizontal content with rotation metadata and on a physically
+  rotated image whose metadata rotation corrects the view.
+- Check text and boxes for 0°, 90°, 180°, and 270°, with and without cropping.
+- Keep the limitation regarding arbitrary skew documented.
 
-## R-04 — Admisión y cola acotada
+## R-04 — Bounded admission and queue
 
-**Evidencia:** con la capacidad ocupada, cuatro entradas de 1 MB se serializaron
-antes de poder iniciar un worker. El limitador actual restringe procesos, no el
-número de solicitudes ni las copias de datos en espera.
+**Evidence:** with capacity occupied, four 1 MB inputs were serialized before a
+worker could start. The current limiter restricts processes, not the number of
+requests or copies of data waiting.
 
-**Decisión recomendada:** establecer admisión acotada antes de acumular la carga
-completa en el futuro endpoint, limitar también la espera por capacidad y usar
-una respuesta HTTP documentada cuando no haya cupo. En la capa de servicio,
-adquirir capacidad antes de cualquier serialización grande y evaluar opciones
-para no bloquear el bucle al copiar datos. Conservar el límite por proceso como
-protección local y documentar que varios workers multiplican la capacidad total.
+**Recommended decision:** establish bounded admission before accumulating the
+full payload in the future endpoint, also limit the wait for capacity, and use a
+documented HTTP response when no capacity is available. In the service layer,
+acquire capacity before any large serialization and evaluate options to avoid
+blocking the event loop when copying data. Retain the per-process limit as local
+protection and document that multiple workers multiply the total capacity.
 
-**Criterios de aceptación:**
+**Acceptance criteria:**
 
-- Pruebas con más solicitudes que la capacidad, entradas grandes y cancelación.
-- La salud de la API sigue respondiendo bajo carga; la cola tiene un límite claro.
-- No se acumulan cargas completas sin límite; se prueban errores y liberación
-  de capacidad. Definir una política global si se usan varios workers o réplicas.
+- Tests with more requests than capacity, large inputs, and cancellation.
+- API health remains responsive under load; the queue has a clear limit.
+- Full payloads do not accumulate without limit; errors and capacity release are
+  tested. Define a global policy if multiple workers or replicas are used.
 
-## R-05 — Instancia compartida del servicio
+## R-05 — Shared service instance
 
-**Evidencia:** cuatro primeras llamadas concurrentes desde hilos a la función
-decorada con `lru_cache` crearon cuatro instancias en una prueba controlada.
-El problema afectaría a una integración que la llame concurrentemente desde
-hilos, por ejemplo como dependencia síncrona; aún no existe `/api/extract`.
+**Evidence:** four initial concurrent calls from threads to the function
+decorated with `lru_cache` created four instances in a controlled test. The
+problem would affect an integration that calls it concurrently from threads, for
+example as a synchronous dependency; `/api/extract` did not yet exist.
 
-**Decisión recomendada:** crear el servicio una vez en el ciclo de vida de
-FastAPI y recuperarlo mediante `app.state`, manteniendo inyección sustituible en
-pruebas. Evitar depender de `lru_cache` como garantía de inicialización única.
+**Recommended decision:** create the service once in the FastAPI lifecycle and
+retrieve it through `app.state`, while keeping injection replaceable in tests.
+Avoid relying on `lru_cache` as a guarantee of unique initialization.
 
-**Criterios de aceptación:** pruebas de inicialización concurrente y del límite
-compartido usando la dependencia HTTP real cuando se implemente el endpoint.
+**Acceptance criteria:** tests of concurrent initialization and the shared limit
+using the real HTTP dependency when the endpoint is implemented.
 
-## R-06 — Configuración de logs
+## R-06 — Log configuration
 
-**Evidencia:** `LOG_LEVEL` se incluye en Compose y `Settings`, pero no se usa
-para configurar logging o Uvicorn.
+**Evidence:** `LOG_LEVEL` is included in Compose and `Settings`, but is not used
+to configure logging or Uvicorn.
 
-**Decisión recomendada:** conectarlo a la configuración efectiva de logs y
-validar los valores admitidos; si no se implementa, no presentarlo como opción
-operativa. No registrar credenciales ni contenido sensible de documentos.
+**Recommended decision:** connect it to the effective logging configuration and
+validate the accepted values; if it is not implemented, do not present it as an
+operational option. Do not log credentials or sensitive document content.
 
-**Criterio de aceptación:** una prueba cambia el nivel y verifica qué registros
-se emiten; la documentación refleja el comportamiento real.
+**Acceptance criterion:** a test changes the level and verifies which records
+are emitted; the documentation reflects the actual behavior.
 
-## Secuencia de entrega
+## Delivery sequence
 
-1. Corregir R-01 y R-02 con pruebas y una entrada por cambio en la bitácora.
-2. Corregir R-03 y comprobar cuadros con OCR real y fixtures de ambos casos.
-3. Preparar R-04 y R-05 al integrar el endpoint, antes de exponerlo.
-4. Resolver R-06 y completar observabilidad sin registrar datos sensibles.
-5. Ejecutar toda la batería en la imagen reconstruida, registrar resultados y
-   actualizar `DECISIONS.md`. No marcar los hallazgos como resueltos hasta pasar
-   sus criterios de aceptación.
+1. Fix R-01 and R-02 with tests and one log entry per change.
+2. Fix R-03 and check boxes with real OCR and fixtures for both cases.
+3. Prepare R-04 and R-05 when integrating the endpoint, before exposing it.
+4. Resolve R-06 and complete observability without logging sensitive data.
+5. Run the entire suite in the rebuilt image, record the results, and update
+   `DECISIONS.md`. Do not mark findings as resolved until they pass their
+   acceptance criteria.

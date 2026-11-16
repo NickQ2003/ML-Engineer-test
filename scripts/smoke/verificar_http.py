@@ -34,13 +34,13 @@ def wait_for_server(seconds: float = 30.0) -> None:
         except (urllib.error.URLError, TimeoutError, ValueError, OSError):
             pass
         time.sleep(0.2)
-    raise AssertionError("La API temporal no respondió en el plazo de inicio")
+    raise AssertionError("The temporary API did not respond within the startup deadline")
 
 
 def post(pdf: bytes, names: str) -> tuple[int, dict]:
     boundary = ("smoke-" + uuid4().hex).encode("ascii")
     body = (
-        b"--" + boundary + b'\r\nContent-Disposition: form-data; name="pdf_file"; filename="documento.pdf"'
+        b"--" + boundary + b'\r\nContent-Disposition: form-data; name="pdf_file"; filename="document.pdf"'
         b"\r\nContent-Type: application/pdf\r\n\r\n" + pdf
         + b"\r\n--" + boundary + b'\r\nContent-Disposition: form-data; name="names"\r\n\r\n'
         + names.encode("utf-8") + b"\r\n--" + boundary + b"--\r\n"
@@ -58,9 +58,9 @@ def post(pdf: bytes, names: str) -> tuple[int, dict]:
     try:
         result = json.loads(data)
     except (ValueError, UnicodeDecodeError):
-        raise AssertionError(f"La API devolvió una respuesta no JSON con HTTP {status}") from None
+        raise AssertionError(f"The API returned a non-JSON response with HTTP {status}") from None
     if not isinstance(result, dict):
-        raise AssertionError("La respuesta JSON no es un objeto")
+        raise AssertionError("The JSON response is not an object")
     return status, result
 
 
@@ -79,43 +79,43 @@ def synthetic_rotated_pdf() -> tuple[bytes, tuple[float, float, float, float]]:
 
 
 def main() -> None:
-    print("Esperando Uvicorn en el contenedor temporal...", flush=True)
+    print("Waiting for Uvicorn in the temporary container...", flush=True)
     wait_for_server()
-    check(True, "GET /health responde HTTP 200 y status=ok")
-    check(SAMPLE.is_file(), "El PDF escaneado de ejemplo está disponible")
+    check(True, "GET /health returns HTTP 200 and status=ok")
+    check(SAMPLE.is_file(), "The scanned sample PDF is available")
     pdf = SAMPLE.read_bytes()
     with pymupdf.open(SAMPLE) as source:
         dimensions = [(page.cropbox.width, page.cropbox.height) for page in source]
-    check(len(dimensions) == 2, "El PDF de referencia tiene dos páginas")
+    check(len(dimensions) == 2, "The reference PDF has two pages")
     names = json.dumps([{"first_name": "Thomas", "last_name": "Muller"}])
 
-    print("\n1. Endpoint real: PDF y nombres válidos", flush=True)
+    print("\n1. Real endpoint: valid PDF and names", flush=True)
     status, result = post(pdf, names)
-    check(status == 200, "POST /api/extract responde HTTP 200")
+    check(status == 200, "POST /api/extract returns HTTP 200")
     extracted, fuzzy = result.get("extracted_names"), result.get("fuzzy_matches")
-    check(isinstance(extracted, list) and isinstance(fuzzy, list), "La respuesta contiene las dos listas del contrato")
+    check(isinstance(extracted, list) and isinstance(fuzzy, list), "The response contains both contract lists")
     pages = {
         item["bounding_box"]["page_number"] for item in extracted if item["name"] == "Thomas Muller"
     }
-    check(pages == {0, 1}, "Thomas Muller está localizado en las páginas 0 y 1")
+    check(pages == {0, 1}, "Thomas Muller is located on pages 0 and 1")
     for item in extracted:
         box = item["bounding_box"]
         page_number = box["page_number"]
         if type(page_number) is not int or not 0 <= page_number < len(dimensions):
-            raise AssertionError("La respuesta contiene una página inválida")
+            raise AssertionError("The response contains an invalid page")
         width, height = dimensions[page_number]
         x, y, w, h = (box[field] for field in ("x", "y", "width", "height"))
         if not (all(math.isfinite(value) for value in (x, y, w, h)) and x >= 0 and y >= 0
                 and w > 0 and h > 0 and x + w <= width + 1e-4 and y + h <= height + 1e-4):
-            raise AssertionError(f"La página {page_number} contiene un cuadro inválido")
-    check(True, "Los cuadros tienen valores válidos y caben en sus páginas")
+            raise AssertionError(f"Page {page_number} contains an invalid bounding box")
+    check(True, "Bounding boxes have valid values and fit within their pages")
     exact = [
         item for item in fuzzy
         if item["extracted_name"] == "Thomas Muller"
         and item["matched_name"] == "Thomas Muller"
         and item["score"] == 1.0
     ]
-    check(len(exact) == 1, "Hay una única coincidencia fuzzy exacta con score 1.0")
+    check(len(exact) == 1, "There is exactly one exact fuzzy match with score 1.0")
     extracted_names = {item["name"] for item in extracted}
     check(
         all(
@@ -124,42 +124,42 @@ def main() -> None:
             and math.isfinite(item["score"]) and 0.0 <= item["score"] <= 1.0
             for item in fuzzy
         ),
-        "Las coincidencias corresponden a la extracción y tienen scores entre 0 y 1",
+        "Matches correspond to the extraction and have scores between 0 and 1",
     )
 
-    print("\n2. Endpoint real: lista vacía y entradas inválidas", flush=True)
+    print("\n2. Real endpoint: empty list and invalid inputs", flush=True)
     status, empty = post(pdf, "[]")
-    check(status == 200 and empty.get("fuzzy_matches") == [], "Una lista vacía responde 200 sin matches")
+    check(status == 200 and empty.get("fuzzy_matches") == [], "An empty list returns 200 with no matches")
     empty_names = empty.get("extracted_names")
     check(
         isinstance(empty_names, list) and any(item["name"] == "Thomas Muller" for item in empty_names),
-        "La lista vacía no impide extraer nombres del PDF",
+        "An empty list does not prevent name extraction from the PDF",
     )
-    status, _ = post(pdf, "esto-no-es-json")
-    check(status == 422, "JSON inválido responde HTTP 422")
-    status, _ = post(b"esto-no-es-un-pdf", "[]")
-    check(status == 400, "Contenido que no es PDF responde HTTP 400")
+    status, _ = post(pdf, "this-is-not-json")
+    check(status == 422, "Invalid JSON returns HTTP 422")
+    status, _ = post(b"this-is-not-a-pdf", "[]")
+    check(status == 400, "Non-PDF content returns HTTP 400")
     # The client and Uvicorn run in the same container with the same settings.
     settings = Settings()
     names_limit = settings.max_names_bytes
     if names_limit > 1024 * 1024 or len(pdf) + names_limit + 2048 > settings.max_request_bytes:
-        raise AssertionError("Los límites de la imagen no permiten comprobar el campo names de forma aislada")
+        raise AssertionError("The image limits do not allow the names field to be checked in isolation")
     status, _ = post(pdf, "x" * (names_limit + 1))
-    check(status == 413, "El campo names superior al límite configurado responde HTTP 413")
+    check(status == 413, "A names field above the configured limit returns HTTP 413")
 
-    print("\n3. Endpoint real: escaneo sintético recortado y rotado", flush=True)
+    print("\n3. Real endpoint: cropped and rotated synthetic scan", flush=True)
     synthetic, expected = synthetic_rotated_pdf()
     status, rotated = post(synthetic, json.dumps([{"first_name": "Alice", "last_name": "Smith"}]))
-    check(status == 200, "El PDF escaneado recortado y rotado responde HTTP 200")
+    check(status == 200, "The cropped and rotated scanned PDF returns HTTP 200")
     found = [item for item in rotated.get("extracted_names", []) if item["name"] == "Alice Smith"]
-    check(len(found) == 1, "Alice Smith se detecta una vez en el escaneo sintético")
+    check(len(found) == 1, "Alice Smith is detected once in the synthetic scan")
     box = found[0]["bounding_box"]
     center = pymupdf.Point(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-    check(box["page_number"] == 0 and center in pymupdf.Rect(expected), "El centro del cuadro cae en la posición PDF conocida")
+    check(box["page_number"] == 0 and center in pymupdf.Rect(expected), "The box center falls within the known PDF position")
 
-    print(f"\nRESULTADO: endpoint real verificado; {len(extracted)} apariciones en el PDF de ejemplo.")
-    print("Sin mocks y sin modificar el PDF original.")
-    print("LÍMITE: no valida todos los nombres ni reemplaza la revisión visual humana.")
+    print(f"\nRESULT: real endpoint verified; {len(extracted)} occurrences in the sample PDF.")
+    print("No mocks and no changes to the original PDF.")
+    print("LIMITATION: does not validate every name or replace human visual review.")
 
 
 if __name__ == "__main__":
