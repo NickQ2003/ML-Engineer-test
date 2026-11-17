@@ -85,6 +85,12 @@ support. See [the 25-question evaluation](docs/EVALUACION_FUENTES_RAG.md),
 a **simulated** generator and does not measure answer quality. `make test` runs
 the local suite and requires the native prerequisites below.
 
+For an isolated end-to-end check using real Gemini, configure a private `.env`
+as above and run `make test-rag-real`. It sends synthetic test data to Google,
+can consume quota or incur charges, and requires reviewing the returned answer.
+The check uses real OCR, embeddings, Qdrant and generation; it does not establish
+general accuracy. It does not change existing Compose services or volumes.
+
 For repeated full names that the English NER model detected at least once,
 `NER_NAME_RECOVERY_PASSES=1` in `.env` enables optional exact recovery on the
 existing OCR text. The default remains `0` (off): recovery can also add false
@@ -111,11 +117,12 @@ when you intend to update that Compose project. The API itself has no user
 authentication and must not be exposed to untrusted users. Browser memory,
 caches and downloaded copies are not securely erased.
 
-**Etapas opcionales** are available after extraction only if the backend's
-protected preview was enabled before extraction and the user supplies its token.
-The frontend checks that the stored PDF and final response match the current
-result before offering OCR/NER/recovery overlays. Preview limits and expiry are
-described below; if it is unavailable, the final result still works.
+After extraction, OCR, NER and any enabled recovery stages load automatically;
+there is no token field. Compose creates a private internal credential shared
+between the app and frontend. The frontend verifies that the stored PDF and final
+response match before offering overlays. Preview limits and expiry are described
+below; if unavailable, the final result still works. An existing `.env` with
+`EXTRACT_PREVIEW_ENABLED=false` keeps previews disabled until explicitly changed.
 
 ## Why this exists (the problem)
 
@@ -558,10 +565,11 @@ The sample comparison and remaining evaluation limits are in
 
 #### Optional authenticated preview
 
-By default, `EXTRACT_PREVIEW_ENABLED=false`: no preview is retained and its
-endpoints return `404`. To opt in, configure it together with a private,
-random `EXTRACT_PREVIEW_TOKEN` of 32–256 printable non-space ASCII characters
-before starting the application. For example, generate a token with
+Compose enables this single-operator development feature by default and generates
+its internal credential in a shared Docker volume. Set `EXTRACT_PREVIEW_ENABLED=false`
+to disable it. An existing `.env` is never overwritten. Outside Compose, the
+backend defaults to disabled; to opt in, configure a private, random
+`EXTRACT_PREVIEW_TOKEN` of 32–256 printable non-space ASCII characters. For example, generate a token with
 `python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`; keep it out of
 source control and logs. Environment variables can be inspected by privileged
 operators or through Docker inspection.
@@ -586,7 +594,10 @@ and OCR workers may still use their normal temporary files during processing.
 The proxy is limited to 10 MiB, 25 pages, 5,000 OCR words, 2 MiB per stage and
 8 MiB total stage data. A larger or unrepresentable preview is skipped without
 failing extraction; the preview endpoint then returns `404`. Access requires
-`Authorization: Bearer <token>`:
+`Authorization: Bearer <token>` when accessing the backend directly. The local
+frontend proxy supplies its internal credential automatically. Any local client
+that can access the frontend can therefore access the latest preview too; this
+is not user authentication. Do not expose that proxy to untrusted users:
 
 ```text
 GET /api/extract/preview                         # ID and available stages
