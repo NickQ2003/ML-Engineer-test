@@ -78,6 +78,13 @@ services:
     volumes:
       - ingestion_data:/app/data/ingestion
 
+  frontend:
+    build: ./frontend
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:8080"
+    depends_on:
+      - app
+
   qdrant:
     image: qdrant/qdrant:v1.13.6
     volumes:

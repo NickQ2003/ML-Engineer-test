@@ -11,4 +11,5 @@ docs_dev
 tests
 sample_pdfs
 data
+frontend
 *.sqlite3*
