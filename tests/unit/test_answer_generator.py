@@ -17,6 +17,14 @@ def settings(provider):
                     llm_allow_external=True)
 
 
+def test_prompt_covers_partial_answers_and_plan_versus_actual():
+    # This verifies the instruction, not that a real model will obey it.
+    from app.services.answer_generator import SYSTEM
+    assert "each supported part" in SYSTEM
+    assert "scheduled event as completed" in SYSTEM
+    assert "approved budget as actual spending" in SYSTEM
+
+
 @pytest.mark.parametrize("provider", ["openai", "gemini"])
 def test_provider_protocol_and_secret_handling(provider):
     async def run():
