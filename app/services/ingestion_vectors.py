@@ -10,8 +10,9 @@ import asyncio
 import hashlib
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+import httpx
 from qdrant_client import AsyncQdrantClient, models
-from qdrant_client.http.exceptions import UnexpectedResponse
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
 from app.core.config import Settings
 from app.core.embedding_model import MODEL_DIMENSIONS, MODEL_NAME, MODEL_REVISION
@@ -26,6 +27,18 @@ class VectorStoreError(RuntimeError):
 
 class VectorCompatibilityError(VectorStoreError):
     pass
+
+
+class VectorTimeoutError(VectorStoreError):
+    """The vector store did not respond within its configured deadline."""
+
+
+class VectorUnavailableError(VectorStoreError):
+    """The vector store could not be reached or returned a transient error."""
+
+
+class VectorRequestError(VectorStoreError):
+    """The vector store rejected a request or returned an invalid response."""
 
 
 def endpoint_key(url: str) -> str:
@@ -56,12 +69,29 @@ class IngestionVectorStore:
         for attempt in range(self.settings.qdrant_read_retries + 1 if read else 1):
             try:
                 return await function(**kwargs)
-            except Exception as error:
-                transient = not isinstance(error, UnexpectedResponse) or error.status_code >= 500 or error.status_code == 429
-                if read and transient and attempt < self.settings.qdrant_read_retries:
-                    await asyncio.sleep(0.1 * 2 ** attempt)
-                    continue
-                raise VectorStoreError("Qdrant operation failed; mutation outcome may be unknown") from None
+            except UnexpectedResponse as error:
+                transient = error.status_code in {408, 429, 500, 502, 503, 504}
+                failure = VectorUnavailableError if transient else VectorRequestError
+            except ResponseHandlingException as error:
+                # The HTTP client wraps transport exceptions. Never inspect or
+                # expose its message, which can contain URLs or response data.
+                source = error.source
+                if isinstance(source, (httpx.TimeoutException, TimeoutError)):
+                    transient, failure = True, VectorTimeoutError
+                elif isinstance(source, httpx.TransportError):
+                    transient, failure = True, VectorUnavailableError
+                else:
+                    transient, failure = False, VectorRequestError
+            except (httpx.TimeoutException, TimeoutError):
+                transient, failure = True, VectorTimeoutError
+            except httpx.TransportError:
+                transient, failure = True, VectorUnavailableError
+            # Unexpected programming errors are not dependency failures and
+            # must not be retried or silently reported as a Qdrant outage.
+            if read and transient and attempt < self.settings.qdrant_read_retries:
+                await asyncio.sleep(0.1 * 2 ** attempt)
+                continue
+            raise failure("Vector store operation failed; mutation outcome may be unknown") from None
 
     def _condition(self, key, value):
         return models.FieldCondition(key=key, match=models.MatchValue(value=value))

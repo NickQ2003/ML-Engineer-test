@@ -12,10 +12,15 @@ from app.api.rag import router
 from app.core.config import Settings
 from app.core.request_limits import ExtractionBodyLimitMiddleware
 from app.services.ask_service import AskService, CitationEvidence, GeneratedAnswer, RetrievedFragment
-from app.services.answer_generator import GeneratorRateLimitError
+from app.services.answer_generator import (
+    GeneratorConfigurationError, GeneratorInvalidResponseError, GeneratorRateLimitError,
+    GeneratorTimeoutError, GeneratorUnavailableError,
+)
 from app.services.embedding_service import EmbeddingInputError, EmbeddingProcessingError
 from app.services.ingestion_ledger import LedgerError
-from app.services.ingestion_vectors import VectorStoreError
+from app.services.ingestion_vectors import (
+    VectorCompatibilityError, VectorRequestError, VectorStoreError, VectorTimeoutError, VectorUnavailableError,
+)
 
 
 class Embedder:
@@ -112,6 +117,33 @@ def test_dependency_failures_do_not_leak_exception_details(monkeypatch, error, s
         response = client.post("/api/ask", json={"question": "sensitive question"})
         assert response.status_code == status and "private" not in response.text
     assert "sensitive question" not in caplog.text and "private" not in caplog.text
+
+
+@pytest.mark.parametrize("error,status,detail", [
+    (GeneratorTimeoutError("private"), 504, "Model provider timed out"),
+    (GeneratorConfigurationError("private"), 503, "Model provider rejected its configuration or request"),
+    (GeneratorUnavailableError("private"), 503, "Model provider is unavailable"),
+    (GeneratorInvalidResponseError("private"), 503, "Model response or citation evidence is invalid"),
+    (VectorTimeoutError("private"), 504, "Vector store timed out"),
+    (VectorCompatibilityError("private"), 503, "Vector collection and ingestion ledger are incompatible"),
+    (VectorUnavailableError("private"), 503, "Vector store is unavailable"),
+    (VectorRequestError("private"), 503, "Vector store rejected the request or returned an invalid response"),
+])
+def test_specific_dependency_failure_does_not_poison_later_requests(monkeypatch, error, status, detail, caplog):
+    from app.services.ask_service import Answer
+    class FailsOnce:
+        calls = 0
+        async def ask(self, question):
+            self.calls += 1
+            if self.calls == 1:
+                raise error
+            return Answer("Recovered", ())
+    with TestClient(app_for(monkeypatch, FailsOnce())) as client:
+        failed = client.post("/api/ask", json={"question": "private question"})
+        assert failed.status_code == status and failed.json() == {"detail": detail}
+        recovered = client.post("/api/ask", json={"question": "next"})
+        assert recovered.status_code == 200 and recovered.json()["answer"] == "Recovered"
+    assert "private" not in failed.text and "private" not in caplog.text
 
 
 def test_body_limit_and_processing_timeout(monkeypatch):

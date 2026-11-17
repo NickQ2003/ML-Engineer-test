@@ -17,6 +17,10 @@ class AnswerGenerationError(RuntimeError):
     """The generator returned an invalid or unverifiable answer."""
 
 
+class AnswerEvidenceError(AnswerGenerationError):
+    """The generated answer or its citations do not satisfy the contract."""
+
+
 @dataclass(frozen=True)
 class RetrievedFragment:
     text: str = field(repr=False)
@@ -98,7 +102,7 @@ class AskService:
                        or not citation.quote.strip() or len(citation.quote) > 512
                        or citation.quote not in texts[citation.citation_id]
                        for citation in generated.citations)):
-            raise AnswerGenerationError("Invalid generated answer or citations")
+            raise AnswerEvidenceError("Invalid generated answer or citations")
         if not generated.citations:
             # An ungrounded answer is never returned as fact.
             return Answer(NO_EVIDENCE, ())

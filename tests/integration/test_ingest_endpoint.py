@@ -107,3 +107,27 @@ def test_domain_errors_are_mapped_without_document_text(monkeypatch, exception, 
     with TestClient(app) as client:
         result = client.post("/api/ingest", files={"pdf_file": ("x", b"pdf")})
     assert result.status_code == status and "private document text" not in result.text
+
+
+@pytest.mark.parametrize("exception,status,detail", [
+    ("VectorTimeoutError", 504, "Vector store timed out; ingestion outcome may need inspection"),
+    ("VectorCompatibilityError", 503, "Vector collection and ingestion ledger are incompatible"),
+    ("VectorUnavailableError", 503, "Vector store is unavailable; ingestion outcome may need inspection"),
+    ("VectorRequestError", 503, "Vector store rejected the request or returned an invalid response"),
+])
+def test_specific_vector_error_and_next_request(monkeypatch, exception, status, detail):
+    import app.api.rag as module
+    app, service = make_app(monkeypatch)
+    original = service.ingest
+    calls = []
+    async def fails_once(upload):
+        calls.append(1)
+        if len(calls) == 1:
+            raise getattr(module, exception)("private document text")
+        return await original(upload)
+    service.ingest = fails_once
+    with TestClient(app) as client:
+        failed = client.post("/api/ingest", files={"pdf_file": ("x", b"pdf")})
+        assert failed.status_code == status and failed.json() == {"detail": detail}
+        assert client.post("/api/ingest", files={"pdf_file": ("x", b"pdf")}).status_code == 200
+    assert "private" not in failed.text

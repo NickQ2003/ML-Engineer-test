@@ -56,6 +56,18 @@ class GeneratorRateLimitError(AnswerGenerationError):
     """The provider refused the request due to rate or quota limits."""
 
 
+class GeneratorConfigurationError(AnswerGenerationError):
+    """The provider rejected credentials, model, permissions or request."""
+
+
+class GeneratorUnavailableError(AnswerGenerationError):
+    """The provider could not be reached or returned a server error."""
+
+
+class GeneratorInvalidResponseError(AnswerGenerationError):
+    """The provider returned content that cannot satisfy the answer contract."""
+
+
 class HTTPAnswerGenerator:
     """One configured provider; bounded retries, no fallback or content logging."""
 
@@ -82,13 +94,15 @@ class HTTPAnswerGenerator:
                     async for chunk in response.aiter_bytes():
                         raw.extend(chunk)
                         if len(raw) > MAX_PROVIDER_BYTES:
-                            raise AnswerGenerationError("Model provider response exceeds limits")
+                            raise GeneratorInvalidResponseError("Model provider response exceeds limits")
                     return raw
             except httpx.HTTPStatusError as error:
+                if error.response.status_code in {400, 401, 403, 404, 405, 422}:
+                    raise GeneratorConfigurationError("Model provider rejected configuration or request") from None
                 retry = error.response.status_code in {500, 502, 503, 504}
                 if not retry or attempt >= self.settings.llm_max_retries:
                     logger.warning("Model provider request failed")
-                    raise AnswerGenerationError("Model provider unavailable or returned an invalid response") from None
+                    raise GeneratorUnavailableError("Model provider unavailable") from None
             except httpx.ConnectTimeout:
                 if attempt >= self.settings.llm_max_retries:
                     logger.warning("Model provider timed out")
@@ -96,13 +110,13 @@ class HTTPAnswerGenerator:
             except httpx.ConnectError:
                 if attempt >= self.settings.llm_max_retries:
                     logger.warning("Model provider request failed")
-                    raise AnswerGenerationError("Model provider unavailable or returned an invalid response") from None
+                    raise GeneratorUnavailableError("Model provider unavailable") from None
             except httpx.TimeoutException:
                 logger.warning("Model provider timed out")
                 raise GeneratorTimeoutError("Model provider timed out") from None
             except httpx.HTTPError:
                 logger.warning("Model provider request failed")
-                raise AnswerGenerationError("Model provider unavailable or returned an invalid response") from None
+                raise GeneratorUnavailableError("Model provider unavailable") from None
             logger.warning("Retrying model provider after transient failure: attempt=%d", attempt + 1)
             await asyncio.sleep(self.settings.llm_retry_backoff_seconds * (2 ** attempt))
 
@@ -150,7 +164,7 @@ class HTTPAnswerGenerator:
             ))
         except (ValueError, TypeError, KeyError, IndexError, UnicodeError):
             logger.warning("Model provider returned an invalid response: stage=%s", stage)
-            raise AnswerGenerationError("Model provider unavailable or returned an invalid response") from None
+            raise GeneratorInvalidResponseError("Model provider returned an invalid response") from None
 
     async def aclose(self):
         await self.client.aclose()
