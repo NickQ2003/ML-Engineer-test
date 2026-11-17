@@ -205,11 +205,64 @@ curl http://localhost:8000/health
 ```
 
 `GET /health` is a liveness check for the API, not a Qdrant readiness check.
-`POST /api/extract` and `POST /api/ingest` are implemented. `/api/ask` has an
-initial HTTP connector, but no LLM provider is configured or implemented; valid
-questions currently return `503` by default. The connector is tested with an
-injected simulated generator, not a real LLM. Recreate services with the new image only when
+`POST /api/extract`, `/api/ingest` and `/api/ask` are implemented. Answer
+generation is disabled by default: valid questions return `503` until a provider
+is explicitly configured. Provider protocol tests use simulated responses, not
+real LLMs. Recreate services with the new image only when
 you intend to upgrade: an already running container does not pick up these changes.
+
+### Configuring question answering
+
+`POST /api/ask` accepts JSON `{"question":"..."}` and returns `answer` and
+`sources`. Only completed, compatible ingestions are eligible. If no context is
+found, it returns an abstention without calling the model. Citations are checked
+against retrieved fragment IDs; this does not guarantee that an answer is true.
+The service does **not** provide multi-user access control: anyone permitted to
+query it can receive information from any document in the shared collection.
+
+Configure a single provider in a private environment file; use `.env.example`
+for the full settings. The default `LLM_PROVIDER=disabled` sends no data:
+
+```dotenv
+# Option 1: your already-running Ollama-compatible server; no automatic download.
+LLM_PROVIDER=local
+LLM_MODEL=your-installed-model
+LLM_LOCAL_BASE_URL=http://host.docker.internal:11434
+
+# Alternatives, not combined with the local example above:
+# LLM_PROVIDER=gemini   # or openai
+# LLM_MODEL=your-supported-model
+# LLM_API_KEY=your-private-key
+# LLM_ALLOW_EXTERNAL=true
+```
+
+For local non-container deployment, the default URL is `http://127.0.0.1:11434`;
+inside a container, localhost refers to that container. A configured local URL
+may nevertheless point to a remote server: ensure it is trusted. The local model
+must support the Ollama `/api/chat` JSON format; model names and provider-specific
+capabilities must be checked independently. External providers receive the
+question and retrieved excerpts; `LLM_ALLOW_EXTERNAL=true` is required in
+addition to the provider, model and key. They may charge and apply their own data
+policies; a Gemini free tier, if offered, is subject to current limits. Never
+commit credentials. Privileged host users can inspect environment variables.
+
+The adapters use bounded HTTP responses and configurable deadlines. They do not
+silently switch providers or retry generation calls. Unsupported models,
+invalid model JSON or citations, unavailable dependencies and timeouts produce
+errors rather than invented answers. Prompts treat document text as untrusted,
+but this cannot guarantee resistance to prompt injection. Provider tests use
+mock HTTP; real model availability, model compatibility, answer quality and
+cost have not been established by those tests.
+
+To exercise real HTTP, OCR, embeddings, Qdrant and SQLite with a **test-only
+simulated generator**, without affecting existing Compose resources:
+
+```bash
+SMOKE_IMAGE=document-intelligence-stage-preview:local SMOKE_ASK_FAKE=1 bash scripts/smoke/ingestion.sh
+```
+
+The default smoke mounts the current local `app/` read-only over the image; it
+is not a packaged-image verification. Never deploy `scripts/smoke/serve_ask_fake.py`.
 
 The OCR component returns words with page-relative character offsets and boxes
 in PDF points, relative to the top-left of the **unrotated crop box**. It first

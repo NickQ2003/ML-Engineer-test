@@ -1,6 +1,8 @@
 """Centralized, environment-overridable application settings."""
 
 from functools import lru_cache
+from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -73,6 +75,13 @@ class Settings(BaseSettings):
     ask_max_in_flight: int = Field(default=2, gt=0, le=100)
     ask_upload_timeout_seconds: float = Field(default=10, gt=0, allow_inf_nan=False)
     ask_job_timeout_seconds: float = Field(default=120, gt=0, allow_inf_nan=False)
+    llm_provider: Literal["disabled", "local", "gemini", "openai"] = "disabled"
+    llm_model: str = Field(default="", max_length=120)
+    llm_api_key: SecretStr | None = None
+    llm_allow_external: bool = False
+    llm_local_base_url: str = "http://127.0.0.1:11434"
+    llm_timeout_seconds: float = Field(default=45, gt=0, le=300, allow_inf_nan=False)
+    llm_max_output_tokens: int = Field(default=512, ge=32, le=2048)
 
     @model_validator(mode="after")
     def validate_ingestion_limits(self):
@@ -88,6 +97,31 @@ class Settings(BaseSettings):
             token = self.extract_preview_token.get_secret_value() if self.extract_preview_token else ""
             if not 32 <= len(token) <= 256 or any(not 33 <= ord(char) <= 126 for char in token):
                 raise ValueError("EXTRACT_PREVIEW_TOKEN must contain 32–256 printable non-space ASCII characters")
+        return self
+
+    @model_validator(mode="after")
+    def validate_llm(self):
+        import re
+
+        if self.llm_provider == "disabled":
+            return self
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,119}", self.llm_model):
+            raise ValueError("An appropriate LLM_MODEL is required")
+        if self.llm_provider in {"openai", "gemini"}:
+            if not self.llm_allow_external:
+                raise ValueError("External LLM requires LLM_ALLOW_EXTERNAL=true")
+            key = self.llm_api_key.get_secret_value() if self.llm_api_key else ""
+            if not key or len(key) > 512 or any(not 33 <= ord(c) <= 126 for c in key):
+                raise ValueError("A valid LLM_API_KEY is required")
+        if self.llm_provider == "local":
+            try:
+                url = urlsplit(self.llm_local_base_url)
+                valid = (url.scheme in {"http", "https"} and url.hostname and url.username is None
+                         and url.password is None and not url.query and not url.fragment and url.port != 0)
+            except ValueError:
+                valid = False
+            if not valid:
+                raise ValueError("Invalid local LLM base URL")
         return self
 
     @field_validator("ner_model")

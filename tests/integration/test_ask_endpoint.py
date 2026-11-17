@@ -144,3 +144,31 @@ def test_capacity_is_bounded_and_cancellation_releases_it(monkeypatch):
             next_response = await client.post("/api/ask", json={"question": "next"})
             assert next_response.status_code != 503
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("provider", ["local", "openai", "gemini"])
+def test_http_connector_with_mocked_provider_protocol(monkeypatch, provider):
+    from app.services.answer_generator import HTTPAnswerGenerator
+
+    async def run():
+        def handler(request):
+            text = '{"answer":"Based on the record","citations":["S1"]}'
+            if provider == "local":
+                payload = {"message": {"content": text}}
+            elif provider == "openai":
+                payload = {"choices": [{"message": {"content": text}}]}
+            else:
+                payload = {"candidates": [{"content": {"parts": [{"text": text}]}}]}
+            return httpx.Response(200, json=payload)
+        provider_client = httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False)
+        settings = Settings(llm_provider=provider, llm_model="test-model", llm_api_key="test-key", llm_allow_external=True)
+        generator = HTTPAnswerGenerator(settings, client=provider_client)
+        app = app_for(monkeypatch, AskService(Embedder(), Retriever([RetrievedFragment("facts", "source")]), generator))
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.post("/api/ask", json={"question": "What happened?"})
+                assert response.status_code == 200
+                assert response.json() == {"answer": "Based on the record", "sources": ["source"]}
+        finally:
+            await generator.aclose()
+    asyncio.run(run())

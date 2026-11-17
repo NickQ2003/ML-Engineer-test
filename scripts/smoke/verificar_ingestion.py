@@ -8,6 +8,7 @@ they are not evidence of an actual Qdrant timeout or a human approval.
 import asyncio
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -110,6 +111,21 @@ async def verify_retrieval(settings, ledger, store, *, partial_fixture):
               if partial_fixture else "Real retrieval finds completed fragments after recreation")
         check(all("página " in item.source and "documento " in item.source for item in found),
               "Real retrieval produces document-specific page references")
+
+        if os.environ.get("SMOKE_ASK_FAKE") == "1":
+            # The test-only server injects a fake generator; HTTP, embeddings,
+            # retrieval, Qdrant and the ledger are real.
+            request = urllib.request.Request(
+                BASE + "/api/ask", data=json.dumps({"question": "What did the board discuss?"}).encode(),
+                method="POST", headers={"Content-Type": "application/json"},
+            )
+            # HTTP server runs in another process; keep this event loop available.
+            def send_ask():
+                with CLIENT.open(request, timeout=180) as response:
+                    return response.status, json.load(response)
+            status, body = await asyncio.to_thread(send_ask)
+            check(status == 200 and body["answer"].startswith("Synthetic smoke answer") and bool(body["sources"]),
+                  "Real HTTP ask uses real retrieval and a test-only simulated generator")
 
         class FakeGenerator:
             async def generate(self, question, context):

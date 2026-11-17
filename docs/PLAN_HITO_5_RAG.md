@@ -6,8 +6,10 @@ Implementar `POST /api/ask` sobre los documentos ingeridos: recibir una pregunta
 generar su embedding, recuperar fragmentos elegibles, consultar un LLM con ese
 contexto y devolver una respuesta fundamentada con fuentes. El contrato fijo es
 `RAGRequest(question: str)` y `RAGResponse(answer: str, sources: list[str])` en
-`app/models/schemas.py`; no modificarlo. El conector HTTP está iniciado, pero
-no hay proveedor implementado ni habilitado: por defecto devuelve `503`.
+`app/models/schemas.py`; no modificarlo. El conector HTTP y adaptadores de
+proveedores están implementados; el proveedor está desactivado por defecto y
+devuelve `503` hasta configurarlo explícitamente. Los modelos reales aún requieren
+validación autorizada, incluido un conjunto de evaluación semántica.
 
 Hito 4 está implementado y probado en el alcance registrado, no implica que la
 precisión esté garantizada para cualquier documento. MT-002 fue revisada por el
@@ -127,7 +129,7 @@ reiniciar los servicios o volúmenes Compose existentes durante las pruebas.
   ledger de ingesta; abre un cliente por consulta, lo cierra al terminar y no
   crea bases ni colecciones. `ASK_MAX_CANDIDATES` limita candidatos (1–1000,
   predeterminado 100). La dependencia está conectada al conector inicial de
-  `/api/ask`; el proveedor permanece desactivado.
+  `/api/ask`; el proveedor está desactivado de forma predeterminada.
 - Crear adaptador de lectura, interfaces y DTO internos; reutilizar validación de
   manifiesto sin efectos de escritura. Resolver explícitamente colección ausente:
   distinguida de colección incompatible y ledger inaccesible, sin crearla.
@@ -143,7 +145,8 @@ reiniciar los servicios o volúmenes Compose existentes durante las pruebas.
   fragmentos, valida IDs de citas y se abstiene sin evidencia o citas. Las
   pruebas usan fakes. El recuperador existente verifica elegibilidad en el ledger;
   aún requiere el refuerzo y las pruebas descritas arriba antes de conectarlo.
-  No hay proveedores reales configurables todavía.
+  Los adaptadores local, Gemini y OpenAI son configurables, pero hasta ahora se
+  han probado con transporte simulado, no con proveedores reales.
 - Implementar servicio con límite total de contexto, IDs de cita y abstención;
   probar con generador fake: sin evidencia no invoca LLM, fuentes pertenecen a
   fragmentos elegibles, citas inválidas son rechazadas y texto hostil no se trata
@@ -158,8 +161,9 @@ reiniciar los servicios o volúmenes Compose existentes durante las pruebas.
   errores, limita cuerpo y concurrencia, controla tiempo y traduce fallos a
   respuestas HTTP. La dependencia usa embeddings y recuperación compartidos;
   sin generador configurado retorna `503` y no inicia procesamiento. Pruebas
-  HTTP usan dependencias inyectadas simuladas. Faltan proveedor real, política
-  definitiva de disponibilidad y validación de extremo a extremo con HTTP real.
+  HTTP usan dependencias inyectadas simuladas. Los adaptadores están desactivados
+  por defecto; la transferencia externa requiere `LLM_ALLOW_EXTERNAL=true`.
+  Falta evaluación de modelos reales y calidad de sus respuestas.
 - Añadir `POST /api/ask` al router existente con `RAGRequest`/`RAGResponse`,
   límites de cuerpo y concurrencia, inyección y errores seguros. Mantener
   `/api/extract`, `/api/ingest` y sus respuestas sin cambios.

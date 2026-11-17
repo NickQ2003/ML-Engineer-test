@@ -16,6 +16,7 @@ from app.services.ocr_service import OCRService
 from app.services.ingestion_service import IngestionService
 from app.services.extraction_preview import LatestExtractionPreview
 from app.services.ask_retrieval import ManagedRetrievalService
+from app.services.answer_generator import HTTPAnswerGenerator
 
 settings = get_settings()
 
@@ -27,7 +28,7 @@ async def lifespan(application: FastAPI):
     application.state.ner_service = NERService(settings)
     application.state.ingestion_service = IngestionService(application.state.ocr_service, settings)
     application.state.retrieval_service = ManagedRetrievalService(settings, application.state.ingestion_service.ledger)
-    application.state.answer_generator = None  # No real or simulated provider is enabled by default.
+    application.state.answer_generator = HTTPAnswerGenerator(settings) if settings.llm_provider != "disabled" else None
     application.state.extraction_preview_store = (
         LatestExtractionPreview(settings.extract_preview_token.get_secret_value())
         if settings.extract_preview_enabled else None
@@ -41,12 +42,16 @@ async def lifespan(application: FastAPI):
             await application.state.retrieval_service.aclose()
         finally:
             try:
-                await application.state.ingestion_service.aclose()
+                if application.state.answer_generator is not None:
+                    await application.state.answer_generator.aclose()
             finally:
                 try:
-                    await application.state.ner_service.aclose()
+                    await application.state.ingestion_service.aclose()
                 finally:
-                    await application.state.ocr_service.aclose()
+                    try:
+                        await application.state.ner_service.aclose()
+                    finally:
+                        await application.state.ocr_service.aclose()
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)

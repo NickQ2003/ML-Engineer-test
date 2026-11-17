@@ -190,6 +190,22 @@
   returned data, and that copy cannot be revoked. Large previews may be skipped
   without failing extraction. No UI is implemented by this feature.
 
+## Question answering providers
+
+- Generation defaults to disabled. Local Ollama-compatible, Gemini and OpenAI
+  adapters share one interface; external providers additionally require the
+  explicit `LLM_ALLOW_EXTERNAL=true` acknowledgement and an API key. No provider
+  fallback, automatic model download, or generation retries are performed.
+- Questions and retrieved document text are sensitive. Keys are excluded from
+  supervised OCR, NER and embedding workers and must not be logged. Environment
+  secrets remain inspectable by privileged host users. The configured local URL
+  is operator-controlled and may point outside the host; it must be trusted.
+- A citation is checked against the selected fragment IDs, not against factual
+  truth. Prompt-injection resistance and semantic accuracy are not guaranteed.
+  Multi-user access control and isolation are out of scope; do not expose the
+  endpoint to untrusted clients. Provider compatibility and quality require
+  real, authorized evaluation beyond the mock protocol tests.
+
 ## OCR ingestion and recovery
 
 - **Model:** use `sentence-transformers/all-MiniLM-L6-v2` at revision

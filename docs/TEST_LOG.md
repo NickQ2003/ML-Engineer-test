@@ -1392,6 +1392,15 @@ contra administradores externos. Las pruebas HTTP de errores quedan pendientes.
 La batería completa de unitarias e integración pasó: **504 pruebas en 60,16 s**
 en un contenedor aislado con el código local montado en solo lectura.
 
+Con `SMOKE_IMAGE=document-intelligence-stage-preview:local SMOKE_ASK_FAKE=1 bash
+scripts/smoke/ingestion.sh` se verificó además `/api/ask` por HTTP real con OCR,
+embeddings, Qdrant y SQLite reales, usando exclusivamente un generador simulado
+inyectado en el servidor de pruebas. Se repitió tras recrear los contenedores
+temporales. Se montó el código de `app/` en solo lectura; no es validación de
+una imagen empaquetada nueva. Gemini, OpenAI y el modelo local no se llamaron.
+Tras añadir los adaptadores, la batería completa pasó **538 pruebas en 61,48 s**;
+las pruebas de protocolo de proveedores usaron HTTP simulado, no modelos reales.
+
 ## Template for future runs
 
 ````markdown

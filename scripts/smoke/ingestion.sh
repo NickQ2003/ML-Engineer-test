@@ -6,6 +6,7 @@ ROOT="$(cd "$CHECKS/../.." && pwd)"
 IMAGE="${SMOKE_IMAGE:-document-intelligence-smoke:local}"
 QDRANT_IMAGE="${SMOKE_QDRANT_IMAGE:-qdrant/qdrant:v1.13.6}"
 PACKAGED_APP="${SMOKE_PACKAGED_APP:-0}"
+ASK_FAKE="${SMOKE_ASK_FAKE:-0}"
 PREFIX="ingest-smoke-$(date +%Y%m%d%H%M%S)-$$-$RANDOM"
 NETWORK=""
 VECTOR_VOLUME=""
@@ -42,6 +43,10 @@ if [ "$PACKAGED_APP" != 0 ] && [ "$PACKAGED_APP" != 1 ]; then
   echo "SMOKE_PACKAGED_APP must be 0 or 1" >&2
   exit 2
 fi
+if [ "$ASK_FAKE" != 0 ] && [ "$ASK_FAKE" != 1 ]; then
+  echo "SMOKE_ASK_FAKE must be 0 or 1" >&2
+  exit 2
+fi
 # Fail rather than adopt any pre-existing resource, even on a name collision.
 for suffix in vectors ledger; do
   if docker volume inspect "$PREFIX-$suffix" >/dev/null 2>&1; then
@@ -68,11 +73,13 @@ start_qdrant() {
 }
 start_api() {
   local -a args=(run --rm -d --network "$NETWORK")
+  local app_module="app.main:app"
+  if [ "$ASK_FAKE" = 1 ]; then app_module="serve_ask_fake:app"; fi
   if [ "$PACKAGED_APP" = 0 ]; then args+=(-v "$ROOT/app:/app/app:ro"); fi
   API="$(docker "${args[@]}" -v "$ROOT/sample_pdfs:/samples:ro" \
     -v "$CHECKS:/checks:ro" -v "$LEDGER_VOLUME:/app/data/ingestion" \
-    -e PYTHONPATH=/app -e QDRANT_URL=http://qdrant:6333 -e HF_HUB_OFFLINE=1 \
-    --entrypoint uvicorn "$IMAGE" app.main:app --host 127.0.0.1 --port 8000)"
+    -e PYTHONPATH=/app:/checks -e QDRANT_URL=http://qdrant:6333 -e HF_HUB_OFFLINE=1 -e SMOKE_ASK_FAKE="$ASK_FAKE" \
+    --entrypoint uvicorn "$IMAGE" "$app_module" --host 127.0.0.1 --port 8000)"
 }
 check_stage() {
   if ! docker exec "$API" python -u /checks/verificar_ingestion.py "$1"; then
