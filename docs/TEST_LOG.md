@@ -1444,6 +1444,34 @@ omisiones observadas. No constituye una revisión humana ni una medición genera
 los resultados anteriores no son directamente comparables por cambios de modelo,
 PDF y condiciones. Detalles en [EVALUACION_FUENTES_RAG.md](EVALUACION_FUENTES_RAG.md).
 
+### Smoke E2E dedicado de RAG
+
+`bash scripts/smoke/rag_e2e.sh --simulado` pasó usando un PDF sintético escaneado
+con primera página vacía. Comprobó `GET /health`, `/api/ingest`, el rechazo de
+una pregunta vacía y `/api/ask` con fuente en la segunda página física. HTTP,
+OCR, embeddings, SQLite y Qdrant fueron reales; la respuesta fue simulada y no
+demuestra calidad de generación. La ejecución montó `app/` en solo lectura y no
+validó una imagen empaquetada nueva. El modo opcional `--gemini` de este nuevo
+guion no se ejecutó en esta verificación.
+
+El usuario informó después una ejecución de `bash scripts/smoke/rag_e2e.sh
+--gemini`: ingesta y pregunta completadas, respuesta `Nora Vega` y fuente de la
+página física 2. Es un resultado reportado por el usuario y evaluado frente al
+PDF sintético del guion, no una ejecución repetida por el asistente ni una
+medición de precisión general. Según el guion, montó el código local de `app/` y
+no modificó servicios Compose existentes.
+
+Tras configurar la URL OpenAI-compatible y añadir reintentos acotados, pasaron
+**574 pruebas unitarias y de integración en 56,27 s** con las dependencias LLM
+simuladas. El smoke `rag_e2e.sh --simulado` también pasó con OCR, embeddings,
+Qdrant y SQLite reales y generador simulado. Posteriormente, el asistente ejecutó
+`rag_e2e.sh --gemini` con datos sintéticos y se obtuvo la respuesta `Nora Vega`
+con fuente en la página 2. La llamada real tuvo éxito sin provocar un fallo, por
+lo que no validó reintentos reales. El endpoint HTTPS configurable y los errores
+transitorios se comprobaron con transporte HTTP simulado; no se verificó un
+proveedor OpenAI-compatible real. El smoke montó el código local en solo lectura,
+no una imagen recién empaquetada.
+
 ## Template for future runs
 
 ````markdown

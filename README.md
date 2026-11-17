@@ -233,6 +233,8 @@ LLM_PROVIDER=gemini   # or openai
 LLM_MODEL=your-supported-model
 LLM_API_KEY=your-private-key
 LLM_ALLOW_EXTERNAL=true
+# OpenAI-compatible HTTPS base URL; used only when LLM_PROVIDER=openai.
+LLM_OPENAI_BASE_URL=https://api.openai.com/v1
 ```
 
 Model names and provider-specific capabilities must be checked independently.
@@ -240,28 +242,55 @@ Providers receive the question and retrieved excerpts; `LLM_ALLOW_EXTERNAL=true`
 addition to the provider, model and key. They may charge and apply their own data
 policies; a Gemini free tier, if offered, is subject to current limits. Never
 commit credentials. Privileged host users can inspect environment variables.
+For OpenAI-compatible services the API key is sent to `LLM_OPENAI_BASE_URL`:
+configure **only a trusted HTTPS destination**. Credentials in the URL, query
+strings, fragments, redirects and insecure HTTP are rejected. The application
+appends `/chat/completions` to the base URL. Changing the destination can send
+both the key and document excerpts to the operator of that service.
 
 The adapters use bounded HTTP responses and configurable deadlines. They do not
-silently switch providers or retry generation calls. Unsupported models,
+silently switch providers. `LLM_MAX_RETRIES` defaults to 1 and is limited to 0–3;
+`LLM_RETRY_BACKOFF_SECONDS` defaults to 0.25 with exponential backoff. Only
+connection failures and HTTP 500/502/503/504 are retried. A failed HTTP request
+may already have consumed quota or incurred charges; set `LLM_MAX_RETRIES=0`
+to disable retries. A 429, read/write timeout, invalid answer or citation is not
+automatically retried. Unsupported models,
 invalid model JSON or citations, unavailable dependencies and timeouts produce
 errors rather than invented answers. Prompts treat document text as untrusted,
 but this cannot guarantee resistance to prompt injection. Provider tests use
 mock HTTP; real model availability, model compatibility, answer quality and
 cost have not been established by those tests.
 
-If the model provider returns a rate or quota limit, `/api/ask` returns `429`;
-it does not automatically retry. Other provider failures return `503`, and
+If the model provider returns a rate or quota limit, `/api/ask` returns `429`
+without retrying. Other provider failures return `503`, and
 timeouts return `504`.
 
 To exercise real HTTP, OCR, embeddings, Qdrant and SQLite with a **test-only
 simulated generator**, without affecting existing Compose resources:
 
 ```bash
-SMOKE_IMAGE=document-intelligence-stage-preview:local SMOKE_ASK_FAKE=1 bash scripts/smoke/ingestion.sh
+SMOKE_IMAGE=document-intelligence-stage-preview:local bash scripts/smoke/rag_e2e.sh
 ```
 
-The default smoke mounts the current local `app/` read-only over the image; it
-is not a packaged-image verification. Never deploy `scripts/smoke/serve_ask_fake.py`.
+The script creates an image-only synthetic PDF with an empty first page, calls
+`/api/ingest` and `/api/ask`, checks input validation and the second-page source,
+and removes its own containers and network on exit. No LLM API is called. The
+answer is simulated and must not be treated as evidence of answer quality.
+The Docker image must already exist; if necessary build it separately:
+
+```bash
+docker build -t document-intelligence-stage-preview:local .
+```
+
+To opt in to **one real Gemini question**, first configure a private `.env` and
+then run `bash scripts/smoke/rag_e2e.sh --gemini`. This sends only synthetic data
+to Google, may consume quota or incur charges, and prints the synthetic answer
+for human review. The `.env` is not printed but its variables may be inspected
+by privileged Docker users. The temporary bridge permits external network access
+and is not a domain-level firewall. Neither mode publishes host ports or touches
+existing Compose services. Both mount the current local `app/` read-only over the
+image; neither is a packaged-image verification. Never deploy the test-only
+`scripts/smoke/serve_ask_fake.py` server.
 
 The OCR component returns words with page-relative character offsets and boxes
 in PDF points, relative to the top-left of the **unrotated crop box**. It first
