@@ -10,7 +10,7 @@ if [ "$#" -eq 1 ] && [ "$1" = "--automatico" ]; then
   AUTO=1
 elif [ "$#" -eq 1 ] && { [ "$1" = "--help" ] || [ "$1" = "-h" ]; }; then
   echo "Uso: bash scripts/smoke/recorrido_visual.sh [--automatico]"
-  echo "Consulta docs/GUIA_SMOKE_VISUAL.md para el recorrido y las precauciones."
+  echo "Consulta README.md para el recorrido y las precauciones de privacidad."
   exit 0
 elif [ "$#" -ne 0 ]; then
   echo "Uso: bash scripts/smoke/recorrido_visual.sh [--automatico]" >&2
@@ -147,6 +147,6 @@ docker exec -i "$API" python /checks/recorrido_visual.py verificar-snapshot < "$
 echo "Qdrant Dashboard: $QDRANT_URL/dashboard/"
 echo "Colección: documents_minilm_1110a243_v1 (filtra kind=chunk)."
 echo "Copia SQLite para DB Browser for SQLite: $SNAPSHOT"
-echo "Guía y consultas: docs/GUIA_SMOKE_VISUAL.md"
+echo "Configuración y precauciones: README.md"
 echo "Cierra el visor SQLite antes de continuar: la copia y los datos de prueba se eliminarán."
 pause

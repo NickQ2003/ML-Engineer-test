@@ -8,11 +8,10 @@ questions over ingested text. The fixed API contracts are in
 services contain the orchestration and accept injectable dependencies.
 
 ```text
-Client ──► FastAPI ──► OCR (PyMuPDF + Tesseract worker)
-                    ├─► spaCy PERSON worker ─► PDF boxes + fuzzy match
-                    ├─► chunker + local embedding worker ─► Qdrant
-                    │                                     └─ SQLite ledger
-                    └─► query embedding ─► verified retrieval ─► Gemini / OpenAI
+React + PDF.js ──► Nginx ──► FastAPI
+                              ├─► OCR + spaCy ─► boxes + fuzzy match
+                              ├─► chunker + local embeddings ─► Qdrant + SQLite
+                              └─► verified retrieval ─► Gemini / OpenAI
 ```
 
 OCR, NER and embeddings use supervised subprocesses so CPU work does not block
@@ -31,8 +30,10 @@ locate each safely mappable span → fuzzy-match full extracted names against th
 requested names → return PDF-point boxes with **zero-based** page indices.
 Unmappable spans are omitted rather than given invented boxes. Optional repeated
 name recovery uses already-located NER names and OCR words; it is off by default.
-The optional authenticated stage preview retains only the latest PDF and
-overlays in memory, with bounds and expiry; it is not a graphical viewer.
+The separate React frontend calls `/api/extract` through Nginx and renders the
+selected PDF in the browser. Optional authenticated stages are shown only after
+checking the PDF and final result; the preview retains only the latest PDF and
+overlays in backend memory, with bounds and expiry.
 
 **Ingest:** `POST /api/ingest` validates and hashes a PDF → records a new
 document and attempt in SQLite → OCRs all pages, including empty ones → splits
@@ -118,8 +119,8 @@ a guarantee of difficulty or truth.
 
 Unit/integration tests cover contracts, resource limits and simulated dependency
 failures. Isolated E2E checks exercise OCR, embeddings, HTTP, SQLite and Qdrant;
-Gemini has also been exercised with synthetic documents. The 15-question Gemini
-sample is useful evidence, not a general accuracy estimate. The HTTP retry and
+Gemini has also been exercised with synthetic documents. The 25-question Gemini
+sample predates the latest prompt adjustment and is not a general accuracy estimate. The HTTP retry and
 OpenAI-compatible URL tests use simulated transport. A real OpenAI-compatible
 endpoint, broader multilingual/OCR quality and distributed concurrency remain
 unvalidated. Full commands and observed results are in `docs/TEST_LOG.md` and

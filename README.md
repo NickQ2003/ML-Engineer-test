@@ -5,9 +5,117 @@ names (with their locations) from scanned PDFs, fuzzy-matches them against a
 provided list, and answers questions about ingested documents using RAG
 (Retrieval-Augmented Generation).
 
-This repository started as an empty skeleton. The implemented extraction flow
-and remaining RAG work are described below. We care as much about *how* it is
-built (design, tests, engineering practices, decisions) as whether it runs.
+The four endpoints are implemented. The reviewer quick start below is followed by
+the original exercise and more detailed operational notes. `DESIGN.md` and
+`DECISIONS.md` explain the implementation and trade-offs.
+
+## Reviewer quick start
+
+**Requirements:** Docker Engine with Compose, `make`, Python 3 and `curl`.
+The first image build downloads dependencies and the pinned embedding model; it
+may take several minutes and needs network access. The image runs on CPU.
+
+```bash
+# One command: approve external use, enter your Gemini key privately,
+# build the images and start the application, frontend and Qdrant.
+make quickstart
+
+curl --fail http://localhost:8000/health
+```
+
+`make quickstart` creates `.env` only if it does not already exist, asks for
+explicit consent, and reads your API key without echoing it from an interactive
+terminal. It creates a mode-`0600` file, then runs `docker compose up --build -d`.
+An existing `.env` is neither read by the setup helper nor changed; Compose uses
+it as-is, including a disabled provider if that is how it was configured.
+Re-running Compose can recreate this project's services: do not run it against
+an existing deployment you do not intend to change. The key is not embedded in
+the image or YAML, but privileged Docker/host users can inspect the environment.
+
+Get your own key in [Google AI Studio](https://aistudio.google.com/app/apikey).
+The recommended model is **`gemini-3.5-flash-lite`**, which was used in the
+recorded synthetic evaluation. Google lists a free tier for this model, but
+availability, regions, limits and billing can change; check
+[pricing](https://ai.google.dev/gemini-api/docs/pricing) and your project quota.
+The free tier may use submitted content to improve Google's products: consult
+Google's current terms and never send sensitive documents without authorization.
+
+Without `make`, the same interactive setup and startup can be run as one command:
+
+```bash
+python3 scripts/setup_env.py --gemini && docker compose up --build -d
+```
+
+For a configuration with generation disabled, use `make setup` and choose `d`,
+then `make up`. Alternatively, create the file manually **without overwriting an
+existing one**:
+
+```bash
+(umask 077; test ! -e .env && test ! -L .env && cp -n .env.example .env)
+# Edit .env privately; do not put a key in a shell command or commit the file.
+```
+
+For Gemini, set `LLM_PROVIDER=gemini`, `LLM_MODEL=gemini-3.5-flash-lite`,
+`LLM_API_KEY` to your private key and `LLM_ALLOW_EXTERNAL=true`. The default is
+`disabled`: extraction and ingestion work without an external LLM, but valid
+`/api/ask` requests return `503` until a provider is configured. An existing
+container must be deliberately recreated after configuration changes.
+
+With the default port and a configured provider:
+
+```bash
+curl --fail --silent --show-error http://localhost:8000/api/extract \
+  -F 'pdf_file=@sample_pdfs/meeting_minutes.pdf;type=application/pdf' \
+  -F 'names=[{"first_name":"Thomas","last_name":"Muller"}]'
+
+curl --fail --silent --show-error http://localhost:8000/api/ingest \
+  -F 'pdf_file=@sample_pdfs/meeting_minutes.pdf;type=application/pdf'
+
+# This sends the question and retrieved excerpts to the configured provider.
+curl --fail --silent --show-error http://localhost:8000/api/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"Who chaired the meeting?"}'
+```
+
+Extraction boxes use **zero-based** pages and PDF points; RAG source labels use
+**one-based** physical pages. Literal citation checks do not prove semantic
+support. See [the 25-question evaluation](docs/EVALUACION_FUENTES_RAG.md),
+[test evidence](docs/TEST_LOG.md) and [manual review](docs/MANUAL_TEST_LOG.md).
+`make smoke-extract` and `make smoke-rag` use isolated resources; the latter uses
+a **simulated** generator and does not measure answer quality. `make test` runs
+the local suite and requires the native prerequisites below.
+
+For repeated full names that the English NER model detected at least once,
+`NER_NAME_RECOVERY_PASSES=1` in `.env` enables optional exact recovery on the
+existing OCR text. The default remains `0` (off): recovery can also add false
+positives and cannot recover a name NER never detected. Review boxes and names;
+the sample observations and limitations are in [test evidence](docs/TEST_LOG.md).
+
+### React frontend
+
+The `frontend` Compose service is included when you start the project with
+`make up`, `make quickstart` or `docker compose up --build -d`. Open
+**http://127.0.0.1:3000**, select a PDF and choose **Analizar PDF**. The optional
+names field accepts JSON such as `[{"first_name":"Ana","last_name":"López"}]`.
+Navigate pages or select a detected
+name; boxes and fuzzy matches are taken directly from `/api/extract`. This basic
+flow does **not** need a Gemini key or preview token. NER recovery remains off by
+default, exactly as for the API.
+
+`FRONTEND_PORT` changes the host port; the frontend binds only to `127.0.0.1`.
+It runs in a separate Nginx container and proxies `/api/` to the `app` container;
+PDF.js renders the selected PDF in the browser. Nginx limits request bodies to
+21 MiB; if backend upload limits are increased, configure Nginx accordingly.
+Starting or rebuilding Compose may recreate **existing services**: do so only
+when you intend to update that Compose project. The API itself has no user
+authentication and must not be exposed to untrusted users. Browser memory,
+caches and downloaded copies are not securely erased.
+
+**Etapas opcionales** are available after extraction only if the backend's
+protected preview was enabled before extraction and the user supplies its token.
+The frontend checks that the stored PDF and final response match the current
+result before offering OCR/NER/recovery overlays. Preview limits and expiry are
+described below; if it is unavailable, the final result still works.
 
 ## Why this exists (the problem)
 
@@ -154,17 +262,42 @@ overlays the bounding boxes on the PDF, containerization (`Dockerfile` /
 `docker-compose.yml`), a truly isolated vector DB, multi-language support,
 batching, or other production hardening. Not required — credited when present.
 
-## Getting started
+## Local application development (outside Docker)
+
+The application requires POSIX, Python 3.12, `uv`, Tesseract with English data,
+and Qdrant 1.13.6. For example, install Tesseract with `brew install tesseract`
+on macOS or `apt install tesseract-ocr tesseract-ocr-eng` on Debian. Install `uv`
+from its [official instructions](https://docs.astral.sh/uv/getting-started/installation/).
+The locked spaCy model is installed by `uv sync`; provisioning the pinned
+embedding model below requires network access. Runtime inference is local.
+
+For a **new development environment** with a free local port, for example:
 
 ```bash
-uv sync --extra dev                          # create .venv and install deps from pyproject.toml
-# The locked spaCy model is installed by uv sync; no separate download command.
-# Vector DB: embedded Chroma needs nothing extra. Only if you choose Qdrant:
-#   docker run -p 6333:6333 qdrant/qdrant
-uv run uvicorn app.main:app --reload
+uv sync --locked --extra dev
+# Starts a separate Qdrant with its own persistent named volume.
+docker run -d --name document-intelligence-local-qdrant \
+  -p 127.0.0.1:6333:6333 \
+  -v document-intelligence-local-qdrant:/qdrant/storage qdrant/qdrant:v1.13.6
+
+# Use a new private directory, not an existing ledger or collection from another deployment.
+install -d -m 700 data/ingestion data/models
+export QDRANT_URL=http://127.0.0.1:6333
+export EMBEDDING_MODEL_DIR="$PWD/data/models/all-minilm-l6-v2"
+export INGESTION_LEDGER_PATH="$PWD/data/ingestion/ledger.sqlite3"
+uv run python app/core/embedding_model.py "$EMBEDDING_MODEL_DIR"
+
+# First run make setup, or create .env as described in the quick start.
+# Exported host paths above override their Compose values in .env.
+uv run --env-file .env uvicorn app.main:app --reload
 ```
 
-Sample scanned PDFs are in `sample_pdfs/`.
+Python `Settings` does **not** automatically load `.env`; `uv run --env-file`
+does. An existing container, port, directory or volume must be inspected before
+reuse. Back up the Qdrant volume and ledger together; this local setup does not
+support multiple hosts or an unrelated writer sharing the collection. For
+`make test`, use the same local prerequisites and environment. Sample scanned
+PDFs are in `sample_pdfs/`.
 
 ## Use of AI tools
 
@@ -192,8 +325,8 @@ The Linux image installs the CPU-only PyTorch build; it does not require NVIDIA
 drivers or CUDA. Changing to GPU acceleration requires a different build setup.
 
 ```bash
-# Optional: customize defaults before starting.
-cp .env.example .env
+# Optional: create a private configuration without overwriting an existing one.
+make setup
 docker compose up --build
 ```
 
@@ -207,8 +340,8 @@ curl http://localhost:8000/health
 `GET /health` is a liveness check for the API, not a Qdrant readiness check.
 `POST /api/extract`, `/api/ingest` and `/api/ask` are implemented. Answer
 generation is disabled by default: valid questions return `503` until a provider
-is explicitly configured. Provider protocol tests use simulated responses, not
-real LLMs. Recreate services with the new image only when
+is explicitly configured. Provider protocol tests use simulated responses; a
+separate synthetic evaluation used real Gemini. Recreate services only when
 you intend to upgrade: an already running container does not pick up these changes.
 
 ### Configuring question answering
@@ -230,7 +363,7 @@ for the full settings. The default `LLM_PROVIDER=disabled` sends no data:
 
 ```dotenv
 LLM_PROVIDER=gemini   # or openai
-LLM_MODEL=your-supported-model
+LLM_MODEL=gemini-3.5-flash-lite
 LLM_API_KEY=your-private-key
 LLM_ALLOW_EXTERNAL=true
 # OpenAI-compatible HTTPS base URL; used only when LLM_PROVIDER=openai.
@@ -263,7 +396,13 @@ cost have not been established by those tests.
 
 If the model provider returns a rate or quota limit, `/api/ask` returns `429`
 without retrying. Other provider failures return `503`, and
-timeouts return `504`.
+timeouts return `504`. Safe error details distinguish provider configuration,
+availability and invalid evidence from vector-store compatibility, request and
+timeout errors. No credential, provider body, question or document text is
+included in error messages. An unsuccessful request does not disable `/health`
+or prevent a subsequent request; it does not silently return an invented answer.
+After an uncertain ingestion write, follow the scoped cleanup procedure rather
+than assuming the write failed.
 
 To exercise real HTTP, OCR, embeddings, Qdrant and SQLite with a **test-only
 simulated generator**, without affecting existing Compose resources:
@@ -414,10 +553,10 @@ unit tests use controlled NER omissions to test each rule deterministically.
 This is not an accuracy evaluation or human approval MT-002. The currently
 running Compose app does not pick up the new setting or code without a deliberate
 upgrade/recreation; the script does not touch existing Compose resources.
-The review of the previous implementation and remaining evaluation work is in
-[docs/REVISION_RECUPERACION.md](docs/REVISION_RECUPERACION.md).
+The sample comparison and remaining evaluation limits are in
+[docs/TEST_LOG.md](docs/TEST_LOG.md).
 
-#### Optional preview for a future interface
+#### Optional authenticated preview
 
 By default, `EXTRACT_PREVIEW_ENABLED=false`: no preview is retained and its
 endpoints return `404`. To opt in, configure it together with a private,
@@ -429,11 +568,10 @@ operators or through Docker inspection.
 
 When enabled, the service keeps **only the latest successful extraction** as an
 in-memory proxy of the original PDF plus immutable stage overlays: OCR word
-boxes, located NER spans, each enabled recovery pass and final results. These are
-JSON overlay data plus the original PDF, **not a built-in graphical UI or
-pre-rendered screenshots**. A future interface can render the PDF and draw the
-boxes; coordinates are PDF points relative to the top-left of the unrotated
-crop box, and physical page indices start at zero. `source` distinguishes
+boxes, located NER spans, each enabled recovery pass and final results. The
+React frontend can optionally draw these JSON boxes over the PDF rendered in the
+browser. Coordinates are PDF points relative to the top-left of the
+unrotated crop box, and physical page indices start at zero. `source` distinguishes
 `ocr`, `ner`, and `recovery_1`–`recovery_3`.
 
 Each valid multipart extraction invalidates the previous preview **before**
@@ -461,9 +599,9 @@ from OpenAPI and do not change the fixed extraction response. This is a
 **single trusted operator, single application process** development aid, not
 multi-tenant authentication or a globally shared store. A token holder can see
 the latest extraction from any client in that process. Multiple workers or
-replicas do not share previews or a global “latest” guarantee. Protect access
-with TLS/reverse-proxy controls when outside a trusted host; use a sandboxed PDF
-viewer and do not assume client downloads or caches can be erased remotely.
+replicas do not share previews or a global “latest” guarantee. Do not expose the
+service to untrusted clients or assume browser downloads or caches can be erased
+remotely. The browser limits its page canvas to about 8 million pixels.
 
 To check the protected API and see temporary annotated PDFs for OCR, NER,
 recovery and final stages without changing existing Compose services:
@@ -523,8 +661,8 @@ to the model revision, endpoint and SQLite ledger identity. An existing unmarked
 collection is **not adopted**, and incompatible/untagged data is refused, never
 deleted automatically. Interrupted creation can leave an unmarked collection;
 it must be inspected and resolved explicitly, not silently reused. The manifest
-is not a document fragment: future retrieval
-must filter `kind=chunk` and exclude incomplete ingestions using the ledger.
+is not a document fragment: retrieval filters `kind=chunk` and excludes
+incomplete ingestions using the ledger.
 
 The `ingestion_data` Compose volume persists SQLite and same-host POSIX locks;
 Qdrant persists in its separate `qdrant_data` volume. All application workers and
@@ -545,7 +683,7 @@ automatic migration. The earlier development-only schema v1 is not migrated.
 | `INGEST_JOB_TIMEOUT_SECONDS` | 420 | Overall ingestion deadline, including OCR, embeddings and vector operations. |
 | `EMBEDDING_BATCH_SIZE` | 16 | Local inference batch size. |
 | `EMBEDDING_JOB_TIMEOUT_SECONDS` | 120 | Worker startup, chunking and inference deadline. |
-| `EMBEDDING_QUERY_MAX_TOKENS` | 256 | Separate budget for future queries, without silent truncation. |
+| `EMBEDDING_QUERY_MAX_TOKENS` | 256 | Separate budget for queries, without silent truncation. |
 | `QDRANT_TIMEOUT_SECONDS` / `QDRANT_READ_RETRIES` | 10 / 2 | Operation deadline and bounded read-only retries. Writes are not blindly retried. |
 | `QDRANT_BATCH_SIZE` | 64 | Number of points per confirmed write. |
 
@@ -615,9 +753,10 @@ its own resources; abrupt runner/Docker termination can prevent cleanup.
 current `app/` directory is mounted read-only for development.
 This is not a general retrieval-quality evaluation or human review MT-002.
 
-For a Spanish step-by-step walkthrough with a temporary Qdrant Dashboard,
-SQLite snapshot, sample queries and visual PDF comparisons, see
-[docs/GUIA_SMOKE_VISUAL.md](docs/GUIA_SMOKE_VISUAL.md).
+For an optional isolated interactive walkthrough with a temporary Qdrant
+Dashboard, SQLite snapshot and sample queries, run
+`bash scripts/smoke/recorrido_visual.sh` after building the smoke image. It
+publishes only loopback ports and removes its own resources on normal exit.
 
 ### Person detection
 
@@ -701,5 +840,5 @@ model accuracy, and do not replace pytest or human visual review (MT-002).
 Test commands, observed results and incident resolutions are recorded in
 [`docs/TEST_LOG.md`](docs/TEST_LOG.md); human review results are recorded in
 [`docs/MANUAL_TEST_LOG.md`](docs/MANUAL_TEST_LOG.md); engineering decisions are in
-[`DECISIONS.md`](DECISIONS.md). Open OCR review findings and proposed fixes are
-tracked in [`docs/OCR_REVIEW_PLAN.md`](docs/OCR_REVIEW_PLAN.md).
+[`DECISIONS.md`](DECISIONS.md). OCR limitations and failure handling are summarized
+in [`DESIGN.md`](DESIGN.md).
