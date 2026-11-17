@@ -92,8 +92,9 @@ The check uses real OCR, embeddings, Qdrant and generation; it does not establis
 general accuracy. It does not change existing Compose services or volumes.
 
 For repeated full names that the English NER model detected at least once,
-`NER_NAME_RECOVERY_PASSES=1` in `.env` enables optional exact recovery on the
-existing OCR text. The default remains `0` (off): recovery can also add false
+`NER_NAME_RECOVERY_PASSES=1` in `.env` enables exact recovery on the existing OCR
+text. The supplied `.env.example` uses `1`; the backend fallback without that
+setting is `0` (off). Recovery can also add false
 positives and cannot recover a name NER never detected. Review boxes and names;
 the sample observations and limitations are in [test evidence](docs/TEST_LOG.md).
 
@@ -105,8 +106,8 @@ The `frontend` Compose service is included when you start the project with
 names field accepts JSON such as `[{"first_name":"Ana","last_name":"López"}]`.
 Navigate pages or select a detected
 name; boxes and fuzzy matches are taken directly from `/api/extract`. This basic
-flow does **not** need a Gemini key or preview token. NER recovery remains off by
-default, exactly as for the API.
+flow does **not** need a Gemini key or preview token. Recovery follows the same
+backend setting as the API; `.env.example` enables level 1.
 
 `FRONTEND_PORT` changes the host port; the frontend binds only to `127.0.0.1`.
 It runs in a separate Nginx container and proxies `/api/` to the `app` container;
@@ -508,8 +509,10 @@ already-started OCR/NER work remains supervised under its own service limits.
 
 #### Optional recovery of repeated names
 
-`NER_NAME_RECOVERY_PASSES` is **0 by default**: recovery is bypassed and the
-existing response and order remain unchanged. The allowed integer levels are:
+The backend fallback for `NER_NAME_RECOVERY_PASSES` is **0**: recovery is bypassed
+and the existing response and order remain unchanged. The supplied `.env.example`
+sets it to **1**; existing `.env` files keep their own setting. The allowed integer
+levels are:
 
 | Level | Additional searches over the existing page-local OCR words |
 |---|---|
