@@ -8,9 +8,11 @@ import sys
 import tempfile
 
 from app.core.config import Settings
+from app.core.embedding_model import MODEL_DIMENSIONS
 from app.core.worker_environment import worker_environment
+from app.services.ask_input import normalize_question
 from app.services.chunking_service import ChunkingError, ChunkingLimitError, TextChunk
-from app.services.embedding_service import EmbeddingModelUnavailableError, EmbeddingProcessingError
+from app.services.embedding_service import EmbeddingInputError, EmbeddingModelUnavailableError, EmbeddingProcessingError
 from app.services.ingestion_ledger import PageRecord
 from app.services.ocr_service import _finish_cancelled_task, _terminate_process_group
 
@@ -37,7 +39,7 @@ class EmbeddingService:
         self._closing = False
         self._task = None
 
-    async def _receive(self):
+    async def _receive(self, *, query=False):
         assert self._process.stdout is not None
         try:
             line = await self._process.stdout.readline()
@@ -51,6 +53,8 @@ class EmbeddingService:
         if message.get("status") == "model_unavailable":
             raise EmbeddingModelUnavailableError("Pinned local model is unavailable")
         if message.get("status") == "input_error":
+            if query:
+                raise EmbeddingInputError("Question cannot be embedded within the model token budget")
             raise ChunkingError("Document text cannot be chunked within the model budget")
         if message.get("status") == "limit_error":
             raise ChunkingLimitError("Document exceeds the configured preparation limits")
@@ -67,11 +71,18 @@ class EmbeddingService:
         await self._process.stdin.drain()
 
     async def prepare(self, pages: list[str]) -> PreparedDocument:
-        if self._closing or self._busy:
-            raise EmbeddingProcessingError("Embedding worker is not available")
         if (not pages or len(pages) > self.settings.max_pdf_pages or any(not isinstance(p, str) for p in pages)
                 or sum(map(len, pages)) > self.settings.ingest_max_document_chars):
             raise ChunkingLimitError("Invalid document text or size")
+        return await self._run({"pages": pages}, pages=pages)
+
+    async def embed_query(self, question: str) -> list[float]:
+        question = normalize_question(question)
+        return await self._run({"operation": "query", "question": question})
+
+    async def _run(self, request, *, pages=None):
+        if self._closing or self._busy:
+            raise EmbeddingProcessingError("Embedding worker is not available")
         self._busy, self._task = True, asyncio.current_task()
         try:
             async with asyncio.timeout(self.settings.embedding_job_timeout_seconds):
@@ -93,11 +104,19 @@ class EmbeddingService:
                     await self._send(self.settings.model_dump(include={
                         "embedding_model_dir", "embedding_batch_size", "max_pdf_pages", "ingest_chunk_tokens",
                         "ingest_overlap_tokens", "ingest_max_page_chars", "ingest_max_document_chars", "ingest_max_chunks",
+                        "embedding_query_max_tokens",
                     }))
                     if (await self._receive())["status"] != "ready":
                         raise EmbeddingProcessingError("Embedding worker did not initialize")
-                await self._send({"pages": pages})
-                message = await self._receive()
+                await self._send(request)
+                message = await self._receive(query=pages is None)
+                if pages is None:
+                    vector = message["vector"]
+                    if (not isinstance(vector, list) or len(vector) != MODEL_DIMENSIONS
+                            or any(type(x) not in (int, float) or not math.isfinite(x) for x in vector)
+                            or not any(vector)):
+                        raise EmbeddingProcessingError("Invalid query embedding")
+                    return vector
                 chunks = [TextChunk(**item) for item in message["chunks"]]
                 records = [PageRecord(**item) for item in message["pages"]]
                 vectors = message["vectors"]
@@ -116,7 +135,7 @@ class EmbeddingService:
             raise EmbeddingTimeoutError("Embedding preparation timed out") from None
         except (OSError, KeyError, TypeError, ValueError) as error:
             await self._reset()
-            if isinstance(error, ChunkingError):
+            if isinstance(error, (ChunkingError, EmbeddingInputError)):
                 raise
             raise EmbeddingProcessingError("Embedding worker failed or returned inconsistent data") from None
         except BaseException:

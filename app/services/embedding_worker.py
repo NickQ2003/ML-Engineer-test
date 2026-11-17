@@ -50,7 +50,15 @@ def prepare(model, request, config):
 
 def process(model, line, config):
     try:
-        send(prepare(model, json.loads(line), config))
+        request = json.loads(line)
+        if request.get("operation", "prepare") == "query":
+            vectors = model.encode([request["question"]], max_tokens=config["embedding_query_max_tokens"],
+                                   max_inputs=1, max_input_chars=2000, max_document_chars=2000)
+            send({"status": "ok", "vector": vectors[0]})
+        elif request.get("operation", "prepare") == "prepare":
+            send(prepare(model, request, config))
+        else:
+            send({"status": "input_error"})
     except ChunkingLimitError:
         send({"status": "limit_error"})
     except (ChunkingError, EmbeddingInputError):

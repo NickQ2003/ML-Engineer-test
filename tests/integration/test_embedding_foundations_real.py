@@ -101,3 +101,27 @@ def test_real_worker_reuses_model_and_can_be_closed():
             await service.aclose()
         assert process.returncode is not None
     asyncio.run(run())
+
+
+def test_real_worker_embeds_query_without_truncation_and_reuses_ingestion_worker():
+    import asyncio
+    from app.core.config import Settings
+    from app.services.embedding_async import EmbeddingService
+    from app.services.embedding_service import EmbeddingInputError
+
+    async def run():
+        service = EmbeddingService(Settings(embedding_query_max_tokens=16))
+        try:
+            prepared = await service.prepare(["The board reviewed the annual budget."])
+            process = service._process
+            vector = await service.embed_query("  The board reviewed the annual budget.  ")
+            assert service._process is process and len(vector) == 384
+            assert sum(a * b for a, b in zip(vector, prepared.vectors[0], strict=True)) > 0.999
+            assert all(math.isfinite(value) for value in vector)
+            with pytest.raises(EmbeddingInputError):
+                await service.embed_query("budget " * 40)
+            assert service._process is None
+        finally:
+            await service.aclose()
+        assert process.returncode is not None
+    asyncio.run(run())

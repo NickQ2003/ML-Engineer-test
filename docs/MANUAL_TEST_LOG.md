@@ -60,8 +60,8 @@ inferred by AI. The generation procedure and technical count are in
 | Field | Value |
 |---|---|
 | Preparation date | 2026-11-15 |
-| Reviewer | Project user reported a preliminary observation; full review pending |
-| Result | **Not approved; full human review pending** |
+| Reviewer | Project user |
+| Result | **Approved for the reviewed example**, based on the user's detailed review |
 | Original document | `sample_pdfs/meeting_minutes.pdf` |
 | Visual evidence | `docs_dev/meeting_minutes_names_visual.pdf`, local copy excluded from Git |
 | Intended scope | Full-name boxes returned by `/api/extract` on both pages |
@@ -75,15 +75,29 @@ inferred by AI. The generation procedure and technical count are in
 3. Report the review results so they can be recorded here. Generating the
    evidence and running automated tests **do not** constitute approval.
 
-### Preliminary observation reported by the user
+### Stage review reported by the user
+
+After the recovery correction, the user visually reviewed the stage outputs and
+reported:
+
+- **OCR: 100% correct.**
+- **NER: 95%:** it did not find Elizabeth Park in several locations.
+- **Recovery 1: 100%:** it found the other Elizabeth Park locations and marked
+  them with green boxes distinguishing recovered results.
+- **Final: 100%:** identical to recovery 1.
+
+The user confirmed that both pages were reviewed in detail. These percentages
+are the user's visual assessment of the example, not metrics calculated from an
+annotated dataset; the approval does not establish general model accuracy.
+
+### Earlier preliminary observation
 
 The user reported that a name can be visible in OCR and detected as a person
 at one location while a later occurrence is not surrounded by a name box.
 The exact document positions were not supplied. This is an observation of an
 omission, not a completed evaluation of all boxes, false positives or accuracy.
-The cause of any particular omission still needs to be checked against the OCR
-words, NER spans and location validation. A repeat review after any recovery
-change is pending and must not be treated as automatic approval.
+The later stage review above records the user's observations after the recovery
+change; it should not be interpreted as an evaluation of other documents.
 
 The file was generated from the real endpoint response; the command and
 technical count are recorded in [TEST_LOG.md](TEST_LOG.md). The copy remains
