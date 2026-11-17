@@ -143,32 +143,45 @@
   than truncates.
   Admission and OCR/NER limits are per process, not global. A cancelled HTTP
   caller can release its HTTP slot while started OCR/NER work remains supervised
-  by those services' independent bounds. Human review of full-name boxes and
-  production capacity calibration remain pending.
+  by those services' independent bounds. The user reviewed the sample document's
+  boxes in MT-002; broader human review and production capacity calibration
+  remain pending.
 
 ## Optional repeated-name recovery
 
-- **Decision:** keep `NER_NAME_RECOVERY_PASSES=0` by default. When explicitly
-  enabled, scan existing page-local OCR word boxes after NER using only validated
-  original NER names as references; never rerun OCR or spaCy and never promote
-  recovered candidates into new references. Levels 1–3 cumulatively add exact
-  normalized matches, separately scored name components with at most two
-  single-character edits, and exact compact-text segmentation matches. The
-  component score is at least 0.80 and components of three or fewer characters
-  must match exactly. Standalone edge punctuation is excluded from candidate
-  windows; true overlapping alternatives remain ambiguous. Single-word,
-  over-eight-component and over-512-character
-  references are excluded from the extra search, not the original NER response.
+- **Decision:** use a deterministic, opt-in search to locate repeated full
+  names in the existing page-local OCR words after NER. The user chose to require
+  full-name candidates rather than attribute isolated first or last names to a
+  person. References are original NER spans that were safely located and have
+  2–8 normalized components; the search never reruns OCR or spaCy and never
+  promotes recovered candidates into new references. This rule applies to the
+  additional search, not to filtering the original NER response.
+- **Deterministic passes:** `NER_NAME_RECOVERY_PASSES=0` bypasses recovery;
+  when enabled, passes are cumulative and use fixed rules:
+  1. Match the complete normalized name, ignoring case, accents and punctuation.
+  2. Compare the same number of components in the same order; allow at most one
+     insertion, deletion or substitution per component, at most two changed
+     components and a minimum score of 0.80 per changed component. Components
+     of three characters or fewer must match exactly.
+  3. Match exact normalized text with spaces removed, with a minimum of eight
+     characters, to handle limited OCR word splitting or merging.
+  The component threshold is separate from the query-name `FUZZY_THRESHOLD`.
+  For fixed OCR/NER inputs and settings the search uses the same ordered rules;
+  this does not make OCR or NER themselves error-free.
 - **Safety:** retain original OCR spelling and existing NER locations. Require
   `PageLocator` validation, reject ambiguous or overlapping alternatives, and
-  count actual windows, comparisons, normalization/comparison work and final occurrences.
-  Limits fail with `413` rather than returning truncated results. The fixed
-  recovery component score is independent of the query-name `FUZZY_THRESHOLD`.
+  exclude standalone punctuation at candidate edges. This resolved a reproduced
+  case where an OCR bullet created two equivalent windows for «Elizabeth Park».
+  Count actual windows, comparisons, normalization/comparison work and final
+  occurrences; limits fail with `413` rather than returning truncated results.
+  References longer than 512 characters are excluded from the extra search.
 - **Trade-offs:** these deterministic rules can improve recall but can propagate
   a bad original NER label or match another person with an identical/similar
   name. The fixed response schema has no per-occurrence recovery provenance.
   False positives, false negatives, performance and multilingual behavior require
-  measurement and human review; MT-002 is not automatically approved.
+  measurement and human review. MT-002 was approved by the user for the reviewed
+  sample; it is not a general accuracy measurement. See
+  [the recovery review](docs/REVISION_RECUPERACION.md).
 
 ## Optional last-extraction preview
 
@@ -195,11 +208,18 @@
 - Generation defaults to disabled. Gemini and OpenAI adapters share one
   interface; both providers require the
   explicit `LLM_ALLOW_EXTERNAL=true` acknowledgement and an API key. No provider
-  fallback or generation retries are performed. The local generation adapter
+  fallback is performed. The local generation adapter
   was removed to focus the project scope; local embeddings remain in use.
 - Questions and retrieved document text are sensitive. Keys are excluded from
   supervised OCR, NER and embedding workers and must not be logged. Environment
   secrets remain inspectable by privileged host users.
+- OpenAI-compatible HTTPS base URLs are configurable and trusted by the
+  operator: the API key and document content are sent to that destination.
+  Redirects, credentials in URLs, query strings and fragments are rejected.
+  Retrying generation is bounded and configurable (default one retry) for
+  connection failures and HTTP 500/502/503/504; no retries on 429, read/write
+  timeouts or invalid output. An earlier 5xx may still have incurred charges;
+  `LLM_MAX_RETRIES=0` disables retries.
 - A citation requires a literal, bounded substring from its selected fragment;
   if any quote or ID is invalid, the whole answer is rejected without retry.
   Literal presence does not establish semantic support or factual truth and may
@@ -247,8 +267,13 @@
 
 ## Use of AI tools
 
-OpenCode was used to help plan and implement infrastructure, OCR, NER and the
-initial extraction input safeguards, translate the README, investigate CUDA image size
-and review findings, and document and run checks. The project author remains
-responsible for reviewing, understanding, and validating the resulting code and
-decisions.
+- **Decision:** use OpenCode and language models, including GPT-6.1 Terra, as
+  support for planning, repetitive logical reviews and identifying potential
+  issues. They also assisted with drafting code and tests under the author's
+  direction.
+- **Verification:** the project author manually tested the tools and reviewed
+  results stage by stage to follow the work and its behavior, complementing those
+  checks with automated tests. Manual observations and automated results are
+  recorded separately; neither AI review nor an automated test is presented as
+  human approval. The author remains responsible for the final decisions and for
+  understanding the code.
