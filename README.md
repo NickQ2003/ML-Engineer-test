@@ -215,8 +215,13 @@ you intend to upgrade: an already running container does not pick up these chang
 
 `POST /api/ask` accepts JSON `{"question":"..."}` and returns `answer` and
 `sources`. Only completed, compatible ingestions are eligible. If no context is
-found, it returns an abstention without calling the model. Citations are checked
-against retrieved fragment IDs; this does not guarantee that an answer is true.
+found, it returns an abstention without calling the model. The model must return
+an internal literal quote for every citation: it must be a nonempty exact
+substring of the selected fragment and at most 512 characters. Any invalid
+quote or ID rejects the complete answer with `503`, without a generation retry.
+Exact quote validation prevents invented quotations but does not prove that the
+quote logically supports the answer; it may also reject legitimate answers if
+the model changes OCR spelling or whitespace.
 The service does **not** provide multi-user access control: anyone permitted to
 query it can receive information from any document in the shared collection.
 
@@ -253,6 +258,10 @@ errors rather than invented answers. Prompts treat document text as untrusted,
 but this cannot guarantee resistance to prompt injection. Provider tests use
 mock HTTP; real model availability, model compatibility, answer quality and
 cost have not been established by those tests.
+
+If the model provider returns a rate or quota limit, `/api/ask` returns `429`;
+it does not automatically retry. Other provider failures return `503`, and
+timeouts return `504`.
 
 To exercise real HTTP, OCR, embeddings, Qdrant and SQLite with a **test-only
 simulated generator**, without affecting existing Compose resources:

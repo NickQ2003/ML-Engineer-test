@@ -24,7 +24,7 @@ from app.core.config import Settings
 from app.core.embedding_model import MODEL_NAME, MODEL_REVISION
 from app.maintenance.cleanup_ingest import clean_attempt
 from app.services.ask_retrieval import LedgerRetriever, ManagedRetrievalService
-from app.services.ask_service import AskService, GeneratedAnswer
+from app.services.ask_service import AskService, CitationEvidence, GeneratedAnswer
 from app.services.embedding_async import EmbeddingService
 from app.services.ingestion_ledger import IngestionLedger, LedgerError, LedgerStateError, PageRecord
 from app.services.ingestion_vectors import IngestionVectorStore, VectorCompatibilityError, VectorStoreError, chunk_id, endpoint_key
@@ -129,7 +129,8 @@ async def verify_retrieval(settings, ledger, store, *, partial_fixture):
 
         class FakeGenerator:
             async def generate(self, question, context):
-                return GeneratedAnswer("Synthetic test answer; no real LLM was called.", (context[0].citation_id,))
+                return GeneratedAnswer("Synthetic test answer; no real LLM was called.",
+                                       (CitationEvidence(context[0].citation_id, context[0].text[:100]),))
 
         answer = await AskService(embeddings, managed, FakeGenerator()).ask("What did the board discuss?")
         check(bool(answer.sources) and answer.answer.startswith("Synthetic test answer"),

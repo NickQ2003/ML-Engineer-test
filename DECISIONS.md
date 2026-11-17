@@ -200,8 +200,10 @@
   supervised OCR, NER and embedding workers and must not be logged. Environment
   secrets remain inspectable by privileged host users. The configured local URL
   is operator-controlled and may point outside the host; it must be trusted.
-- A citation is checked against the selected fragment IDs, not against factual
-  truth. Prompt-injection resistance and semantic accuracy are not guaranteed.
+- A citation requires a literal, bounded substring from its selected fragment;
+  if any quote or ID is invalid, the whole answer is rejected without retry.
+  Literal presence does not establish semantic support or factual truth and may
+  reject valid paraphrases. Prompt-injection resistance and semantic accuracy are not guaranteed.
   Multi-user access control and isolation are out of scope; do not expose the
   endpoint to untrusted clients. Provider compatibility and quality require
   real, authorized evaluation beyond the mock protocol tests.

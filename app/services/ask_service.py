@@ -30,9 +30,15 @@ class ContextFragment:
 
 
 @dataclass(frozen=True)
+class CitationEvidence:
+    citation_id: str
+    quote: str = field(repr=False)
+
+
+@dataclass(frozen=True)
 class GeneratedAnswer:
     answer: str = field(repr=False)
-    citations: tuple[str, ...]
+    citations: tuple[CitationEvidence, ...]
 
 
 @dataclass(frozen=True)
@@ -67,7 +73,7 @@ class AskService:
         fragments = await self.retriever.retrieve(vector, limit=self.max_fragments)
         if not isinstance(fragments, list) or len(fragments) > self.max_fragments:
             raise AnswerGenerationError("Invalid retrieval result")
-        context, sources, total = [], {}, 0
+        context, sources, texts, total = [], {}, {}, 0
         for fragment in fragments:
             if (not isinstance(fragment, RetrievedFragment) or not isinstance(fragment.text, str)
                     or not fragment.text.strip() or not isinstance(fragment.source, str)
@@ -79,6 +85,7 @@ class AskService:
             citation_id = f"S{len(context) + 1}"
             context.append(ContextFragment(citation_id, fragment.text))
             sources[citation_id] = fragment.source
+            texts[citation_id] = fragment.text
             total += len(fragment.text)
         if not context:
             return Answer(NO_EVIDENCE, ())
@@ -86,10 +93,14 @@ class AskService:
         if (not isinstance(generated, GeneratedAnswer) or not isinstance(generated.answer, str)
                 or not generated.answer.strip() or len(generated.answer) > self.max_answer_chars
                 or not isinstance(generated.citations, tuple)
-                or any(not isinstance(citation, str) or citation not in sources for citation in generated.citations)):
+                or any(not isinstance(citation, CitationEvidence) or not isinstance(citation.citation_id, str)
+                       or citation.citation_id not in sources or not isinstance(citation.quote, str)
+                       or not citation.quote.strip() or len(citation.quote) > 512
+                       or citation.quote not in texts[citation.citation_id]
+                       for citation in generated.citations)):
             raise AnswerGenerationError("Invalid generated answer or citations")
         if not generated.citations:
             # An ungrounded answer is never returned as fact.
             return Answer(NO_EVIDENCE, ())
-        selected = tuple(dict.fromkeys(sources[citation] for citation in generated.citations))
+        selected = tuple(dict.fromkeys(sources[citation.citation_id] for citation in generated.citations))
         return Answer(generated.answer.strip(), selected)

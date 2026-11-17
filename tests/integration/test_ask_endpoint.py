@@ -11,7 +11,8 @@ from app.api.dependencies import get_ask_service
 from app.api.rag import router
 from app.core.config import Settings
 from app.core.request_limits import ExtractionBodyLimitMiddleware
-from app.services.ask_service import AskService, GeneratedAnswer, RetrievedFragment
+from app.services.ask_service import AskService, CitationEvidence, GeneratedAnswer, RetrievedFragment
+from app.services.answer_generator import GeneratorRateLimitError
 from app.services.embedding_service import EmbeddingInputError, EmbeddingProcessingError
 from app.services.ingestion_ledger import LedgerError
 from app.services.ingestion_vectors import VectorStoreError
@@ -36,7 +37,7 @@ class Generator:
 
     async def generate(self, question, context):
         self.calls += 1
-        return GeneratedAnswer("A grounded answer", (context[0].citation_id,))
+        return GeneratedAnswer("A grounded answer", (CitationEvidence(context[0].citation_id, context[0].text),))
 
 
 def app_for(monkeypatch, service, **kwargs):
@@ -101,6 +102,7 @@ def test_invalid_requests_do_not_echo_sensitive_input(monkeypatch, body, caplog)
 @pytest.mark.parametrize("error,status", [
     (EmbeddingInputError("private"), 422), (EmbeddingProcessingError("private"), 503),
     (LedgerError("private"), 503), (VectorStoreError("private"), 503), (RuntimeError("private"), 500),
+    (GeneratorRateLimitError("private"), 429),
 ])
 def test_dependency_failures_do_not_leak_exception_details(monkeypatch, error, status, caplog):
     class Broken:
@@ -152,7 +154,7 @@ def test_http_connector_with_mocked_provider_protocol(monkeypatch, provider):
 
     async def run():
         def handler(request):
-            text = '{"answer":"Based on the record","citations":["S1"]}'
+            text = '{"answer":"Based on the record","citations":[{"id":"S1","quote":"facts"}]}'
             if provider == "local":
                 payload = {"message": {"content": text}}
             elif provider == "openai":
@@ -172,3 +174,30 @@ def test_http_connector_with_mocked_provider_protocol(monkeypatch, provider):
         finally:
             await generator.aclose()
     asyncio.run(run())
+
+
+def test_fabricated_quote_is_rejected_without_retry_or_leak(monkeypatch, caplog):
+    from app.services.answer_generator import HTTPAnswerGenerator
+
+    async def run():
+        calls = []
+        def handler(request):
+            calls.append(1)
+            return httpx.Response(200, json={"message": {"content": json.dumps({
+                "answer": "private invented answer",
+                "citations": [{"id": "S1", "quote": "invented secret evidence"}],
+            })}})
+        import json
+        provider_client = httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False)
+        generator = HTTPAnswerGenerator(Settings(llm_provider="local", llm_model="test"), client=provider_client)
+        app = app_for(monkeypatch, AskService(Embedder(), Retriever([RetrievedFragment("actual facts", "source")]), generator))
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                response = await client.post("/api/ask", json={"question": "private question"})
+                assert response.status_code == 503
+                assert "invented" not in response.text and "private" not in response.text
+                assert calls == [1]
+        finally:
+            await generator.aclose()
+    asyncio.run(run())
+    assert "private question" not in caplog.text and "invented secret evidence" not in caplog.text

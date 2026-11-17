@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from app.services.ask_service import (
-    AnswerGenerationError, AskService, GeneratedAnswer, NO_EVIDENCE, RetrievedFragment,
+    AnswerGenerationError, AskService, CitationEvidence, GeneratedAnswer, NO_EVIDENCE, RetrievedFragment,
 )
 
 
@@ -46,7 +46,9 @@ def test_no_context_never_calls_generator():
 
 def test_sources_are_selected_only_from_valid_citations_and_deduplicated():
     fragments = [RetrievedFragment("First", "one.pdf page 1"), RetrievedFragment("Second", "two.pdf page 2")]
-    answer, _, generator = run(fragments, GeneratedAnswer(" answer ", ("S2", "S1", "S2")))
+    answer, _, generator = run(fragments, GeneratedAnswer(" answer ", (
+        CitationEvidence("S2", "Second"), CitationEvidence("S1", "First"), CitationEvidence("S2", "Second"),
+    )))
     assert answer.answer == "answer" and answer.sources == ("two.pdf page 2", "one.pdf page 1")
     assert [part.citation_id for part in generator.calls[0][1]] == ["S1", "S2"]
 
@@ -56,7 +58,8 @@ def test_generator_without_citations_must_abstain():
     assert answer.answer == NO_EVIDENCE and not answer.sources
 
 
-@pytest.mark.parametrize("result", [GeneratedAnswer("answer", ("S2",)), GeneratedAnswer("", ("S1",)), None])
+@pytest.mark.parametrize("result", [GeneratedAnswer("answer", (CitationEvidence("S2", "text"),)),
+                                    GeneratedAnswer("", (CitationEvidence("S1", "text"),)), None])
 def test_invalid_generator_results_fail_closed(result):
     with pytest.raises(AnswerGenerationError):
         run([RetrievedFragment("text", "source")], result)
@@ -64,7 +67,7 @@ def test_invalid_generator_results_fail_closed(result):
 
 def test_context_is_bounded_without_truncation():
     fragments = [RetrievedFragment("123", "one"), RetrievedFragment("4567", "two")]
-    answer, _, generator = run(fragments, GeneratedAnswer("answer", ("S1",)), max_context_chars=5)
+    answer, _, generator = run(fragments, GeneratedAnswer("answer", (CitationEvidence("S1", "123"),)), max_context_chars=5)
     assert answer.sources == ("one",) and len(generator.calls[0][1]) == 1
 
 
@@ -76,3 +79,18 @@ def test_oversized_first_fragment_has_no_evidence_and_no_generator_call():
 def test_invalid_retrieval_is_rejected_without_exposing_text():
     with pytest.raises(AnswerGenerationError, match="^Invalid retrieval result$"):
         run([RetrievedFragment("secret", "")], None)
+
+
+@pytest.mark.parametrize("citation", [
+    CitationEvidence("S1", "invented"), CitationEvidence("S1", ""), CitationEvidence("S1", " "),
+    CitationEvidence("S1", "text" * 129), CitationEvidence("S2", "actual text"), "S1",
+])
+def test_invalid_evidence_rejects_entire_answer_without_retry(citation):
+    with pytest.raises(AnswerGenerationError, match="Invalid generated answer or citations"):
+        run([RetrievedFragment("actual text", "source")], GeneratedAnswer("answer", (citation,)))
+
+
+def test_quote_must_match_the_correct_fragment_exactly():
+    fragments = [RetrievedFragment("first text", "one"), RetrievedFragment("second text", "two")]
+    with pytest.raises(AnswerGenerationError):
+        run(fragments, GeneratedAnswer("answer", (CitationEvidence("S1", "second text"),)))

@@ -15,6 +15,7 @@ from app.api.extraction_form import InvalidMultipartError, close_extraction_form
 from app.core.config import get_settings
 from app.models.schemas import IngestResponse, RAGRequest, RAGResponse
 from app.services.ask_input import InvalidQuestionError, normalize_question
+from app.services.answer_generator import GeneratorRateLimitError
 from app.services.ask_service import AnswerGenerationError, AskService
 from app.services.chunking_service import ChunkingError, ChunkingLimitError
 from app.services.embedding_async import EmbeddingTimeoutError
@@ -75,7 +76,7 @@ async def ingest(request: Request, service: Annotated[IngestionService, Depends(
     }}}}},
     responses={408: {"description": "Upload timeout"}, 413: {"description": "Request body too large"},
                422: {"description": "Invalid question"}, 503: {"description": "Service unavailable"},
-               504: {"description": "Processing timeout"}},
+               429: {"description": "Provider rate or quota limit"}, 504: {"description": "Processing timeout"}},
 )
 async def ask(request: Request, service: Annotated[AskService | None, Depends(get_ask_service)]):
     # Validate manually to avoid echoing sensitive invalid inputs in FastAPI's
@@ -96,8 +97,11 @@ async def ask(request: Request, service: Annotated[AskService | None, Depends(ge
         raise HTTPException(422, "Invalid question") from None
     except (TimeoutError, EmbeddingTimeoutError):
         raise HTTPException(504, "Question answering timed out") from None
+    except GeneratorRateLimitError:
+        raise HTTPException(429, "Model provider rate or quota limit") from None
     except (LedgerError, VectorStoreError, EmbeddingModelUnavailableError, EmbeddingProcessingError,
-            AnswerGenerationError):
+            AnswerGenerationError) as error:
+        logger.warning("Question answering unavailable: dependency=%s", type(error).__name__)
         raise HTTPException(503, "Question answering unavailable") from None
     except Exception:
         logger.error("Question answering failed unexpectedly")

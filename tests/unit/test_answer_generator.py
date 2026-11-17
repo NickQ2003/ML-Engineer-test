@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.config import Settings
-from app.services.answer_generator import GeneratorTimeoutError, HTTPAnswerGenerator, MAX_PROVIDER_BYTES
+from app.services.answer_generator import GeneratorRateLimitError, GeneratorTimeoutError, HTTPAnswerGenerator, MAX_PROVIDER_BYTES
 from app.services.ask_service import AnswerGenerationError, ContextFragment
 
 
@@ -29,20 +29,21 @@ def test_provider_protocol_and_secret_handling(provider):
             if provider == "openai":
                 assert request.headers["authorization"] == "Bearer test-key"
                 assert request.url.host == "api.openai.com"
-                data = {"choices": [{"message": {"content": '{"answer":"ok","citations":["S1"]}'}}]}
+                data = {"choices": [{"message": {"content": '{"answer":"ok","citations":[{"id":"S1","quote":"untrusted context"}]}'}}]}
             elif provider == "gemini":
                 assert request.headers["x-goog-api-key"] == "test-key"
                 assert request.url.host == "generativelanguage.googleapis.com"
-                data = {"candidates": [{"content": {"parts": [{"text": '{"answer":"ok","citations":["S1"]}'}]}}]}
+                data = {"candidates": [{"content": {"parts": [{"text": '{"answer":"ok","citations":[{"id":"S1","quote":"untrusted context"}]}'}]}}]}
             else:
                 assert request.url.path == "/api/chat" and "authorization" not in request.headers
-                data = {"message": {"content": '{"answer":"ok","citations":["S1"]}'}}
+                data = {"message": {"content": '{"answer":"ok","citations":[{"id":"S1","quote":"untrusted context"}]}'}}
             assert "test-key" not in str(request.url) and "test-key" not in encoded
             return httpx.Response(200, json=data)
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False)
         generator = HTTPAnswerGenerator(settings(provider), client=client)
         result = await generator.generate("private question", (ContextFragment("S1", "untrusted context"),))
-        assert result.answer == "ok" and result.citations == ("S1",) and len(seen) == 1
+        assert result.answer == "ok" and result.citations[0].citation_id == "S1"
+        assert result.citations[0].quote == "untrusted context" and len(seen) == 1
         await generator.aclose()
         assert client.is_closed
     asyncio.run(run())
@@ -68,6 +69,8 @@ def test_disabled_needs_no_model_or_key_and_secrets_are_hidden():
     httpx.Response(500, text="sensitive provider response"),
     httpx.Response(200, json={"message": {"content": "not json"}}),
     httpx.Response(200, json={"message": {"content": '{"answer":"ok","citations":"S1"}'}}),
+    httpx.Response(200, json={"message": {"content": '{"answer":"ok","citations":["S1"]}'}}),
+    httpx.Response(200, json={"message": {"content": '{"answer":"ok","citations":[{"id":"S1"}]}'}}),
     httpx.Response(200, content=b"x" * (MAX_PROVIDER_BYTES + 1)),
 ])
 def test_bad_provider_response_fails_without_disclosing_content(response):
@@ -97,4 +100,70 @@ def test_provider_timeout_is_distinct_and_not_retried():
         finally:
             await generator.aclose()
         assert len(calls) == 1
+    asyncio.run(run())
+
+
+def test_provider_rate_limit_is_distinct_and_not_retried():
+    calls = []
+    def limited(request):
+        calls.append(1)
+        return httpx.Response(429, text="private provider detail")
+    async def run():
+        generator = HTTPAnswerGenerator(settings("local"), client=httpx.AsyncClient(
+            transport=httpx.MockTransport(limited), trust_env=False,
+        ))
+        try:
+            with pytest.raises(GeneratorRateLimitError, match="^Model provider rate or quota limit$"):
+                await generator.generate("question", (ContextFragment("S1", "context"),))
+        finally:
+            await generator.aclose()
+        assert calls == [1]
+    asyncio.run(run())
+
+
+def test_gemini_ignores_thought_parts_and_uses_visible_answer():
+    async def run():
+        response = httpx.Response(200, json={"candidates": [{"finishReason": "STOP", "content": {"parts": [
+            {"thought": True, "text": "private thought, not JSON"},
+            {"text": '{"answer":"ok","citations":[{"id":"S1","quote":"context"}]}'},
+        ]}}]})
+        client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: response), trust_env=False)
+        generator = HTTPAnswerGenerator(settings("gemini"), client=client)
+        try:
+            result = await generator.generate("question", (ContextFragment("S1", "context"),))
+            assert result.answer == "ok" and result.citations[0].quote == "context"
+        finally:
+            await generator.aclose()
+    asyncio.run(run())
+
+
+def test_gemini_missing_content_logs_only_safe_finish_reason(caplog):
+    async def run():
+        response = httpx.Response(200, json={"candidates": [{"finishReason": "MAX_TOKENS"}]})
+        generator = HTTPAnswerGenerator(settings("gemini"), client=httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: response), trust_env=False,
+        ))
+        try:
+            with pytest.raises(AnswerGenerationError):
+                await generator.generate("sensitive question", (ContextFragment("S1", "private content"),))
+        finally:
+            await generator.aclose()
+    asyncio.run(run())
+    assert "reason=MAX_TOKENS" in caplog.text and "stage=provider_content" in caplog.text
+    assert "sensitive question" not in caplog.text and "private content" not in caplog.text
+
+
+def test_gemini_truncated_completion_is_rejected_even_if_json_is_valid():
+    async def run():
+        response = httpx.Response(200, json={"candidates": [{"finishReason": "MAX_TOKENS", "content": {"parts": [
+            {"text": '{"answer":"ok","citations":[{"id":"S1","quote":"context"}]}'},
+        ]}}]})
+        generator = HTTPAnswerGenerator(settings("gemini"), client=httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: response), trust_env=False,
+        ))
+        try:
+            with pytest.raises(AnswerGenerationError):
+                await generator.generate("question", (ContextFragment("S1", "context"),))
+        finally:
+            await generator.aclose()
     asyncio.run(run())

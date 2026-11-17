@@ -1401,6 +1401,49 @@ una imagen empaquetada nueva. Gemini, OpenAI y el modelo local no se llamaron.
 Tras añadir los adaptadores, la batería completa pasó **538 pruebas en 61,48 s**;
 las pruebas de protocolo de proveedores usaron HTTP simulado, no modelos reales.
 
+### Primera prueba real de Gemini con datos sintéticos
+
+Se ejecutó `SMOKE_IMAGE=document-intelligence-stage-preview:local bash
+scripts/smoke/gemini_real.sh`: la API, embeddings, OCR, Qdrant, SQLite y las
+tres llamadas a Gemini fueron reales; se montó el código local en la imagen
+existente, por lo que no es una validación de una imagen recién empaquetada.
+El PDF de prueba, de dos páginas, era sintético. Resultados observados:
+
+| Pregunta | Resultado | Fuentes |
+|---|---|---|
+| Coordinadora | `Nora Vega`, correcto para el PDF | Página 1, pertinente |
+| Fecha de lanzamiento | `17 March 2027`, correcto para el PDF | Páginas 1 y 2; la página 2 es pertinente, la página 1 no contiene la fecha |
+| Teléfono no indicado | Abstención: información insuficiente | Ninguna |
+
+La tercera respuesta no ofrece un teléfono inventado. Las fuentes de la segunda
+respuesta incluyen ambas páginas. La página 2 no nombraba explícitamente el
+proyecto, por lo que la página 1 puede aportar contexto para identificarlo; no
+se puede clasificar esa cita como innecesaria con seguridad. Comprobar que un ID se
+recuperó no garantiza que respalde cada afirmación. Esta prueba de tres preguntas
+no establece precisión o cobertura general y necesita revisión adicional con un
+conjunto anotado. La red temporal tenía salida externa sin filtro por dominio;
+la API key no se imprimió. Los contenedores y red propios se eliminaron; los
+servicios Compose preexistentes continuaron activos.
+
+### Citas literales y evaluación ampliada
+
+Se añadieron citas textuales internas y validación exacta contra fragmentos;
+una cita inválida rechaza la respuesta completa sin reintento. La batería
+completa pasó **550 pruebas en 56,10 s**; el smoke de ingesta y `/api/ask` con
+generador simulado también pasó. La evaluación real de 15 preguntas quedó
+incompleta por respuestas HTTP 429 del proveedor y una respuesta de formato
+inválido. Una segunda ejecución espaciada se detuvo tras dos 429 consecutivos.
+Las cuentas y limitaciones están en [EVALUACION_FUENTES_RAG.md](EVALUACION_FUENTES_RAG.md).
+No se concluye que haya mejorado la precisión ni se identifica la cuota específica.
+
+Con Gemini `gemini-3.5-flash-lite`, salida limitada a 512 tokens y PDF sintético
+v2 inequívoco, el recorrido real completó 15/15 solicitudes sin errores técnicos.
+El asistente comparó los resultados con la anotación: 11 respuestas esperadas,
+cuatro abstenciones esperadas y 14 referencias de página esperadas sin extras ni
+omisiones observadas. No constituye una revisión humana ni una medición general;
+los resultados anteriores no son directamente comparables por cambios de modelo,
+PDF y condiciones. Detalles en [EVALUACION_FUENTES_RAG.md](EVALUACION_FUENTES_RAG.md).
+
 ## Template for future runs
 
 ````markdown

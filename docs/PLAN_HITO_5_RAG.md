@@ -8,8 +8,8 @@ contexto y devolver una respuesta fundamentada con fuentes. El contrato fijo es
 `RAGRequest(question: str)` y `RAGResponse(answer: str, sources: list[str])` en
 `app/models/schemas.py`; no modificarlo. El conector HTTP y adaptadores de
 proveedores están implementados; el proveedor está desactivado por defecto y
-devuelve `503` hasta configurarlo explícitamente. Los modelos reales aún requieren
-validación autorizada, incluido un conjunto de evaluación semántica.
+devuelve `503` hasta configurarlo explícitamente. Se probó Gemini con un PDF
+sintético y tres preguntas; queda una evaluación semántica más amplia.
 
 Hito 4 está implementado y probado en el alcance registrado, no implica que la
 precisión esté garantizada para cualquier documento. MT-002 fue revisada por el
@@ -142,11 +142,11 @@ reiniciar los servicios o volúmenes Compose existentes durante las pruebas.
 
 - **Avance inicial:** `app/services/ask_service.py` define interfaces internas
   para embeddings, recuperación y generación, limita contexto sin truncar
-  fragmentos, valida IDs de citas y se abstiene sin evidencia o citas. Las
+  fragmentos, exige una cita textual exacta por ID y se abstiene sin evidencia o citas. Las
   pruebas usan fakes. El recuperador existente verifica elegibilidad en el ledger;
   aún requiere el refuerzo y las pruebas descritas arriba antes de conectarlo.
-  Los adaptadores local, Gemini y OpenAI son configurables, pero hasta ahora se
-  han probado con transporte simulado, no con proveedores reales.
+  Los adaptadores local, Gemini y OpenAI son configurables. Gemini se probó con
+  tres preguntas sintéticas reales; local y OpenAI solo con transporte simulado.
 - Implementar servicio con límite total de contexto, IDs de cita y abstención;
   probar con generador fake: sin evidencia no invoca LLM, fuentes pertenecen a
   fragmentos elegibles, citas inválidas son rechazadas y texto hostil no se trata
