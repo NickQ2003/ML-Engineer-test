@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -78,8 +79,11 @@ class Settings(BaseSettings):
     llm_model: str = Field(default="", max_length=120)
     llm_api_key: SecretStr | None = None
     llm_allow_external: bool = False
+    llm_openai_base_url: str = Field(default="https://api.openai.com/v1", min_length=1, max_length=2048)
     llm_timeout_seconds: float = Field(default=45, gt=0, le=300, allow_inf_nan=False)
     llm_max_output_tokens: int = Field(default=512, ge=32, le=2048)
+    llm_max_retries: int = Field(default=1, ge=0, le=3)
+    llm_retry_backoff_seconds: float = Field(default=0.25, ge=0, le=5, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def validate_ingestion_limits(self):
@@ -110,6 +114,20 @@ class Settings(BaseSettings):
         key = self.llm_api_key.get_secret_value() if self.llm_api_key else ""
         if not key or len(key) > 512 or any(not 33 <= ord(c) <= 126 for c in key):
             raise ValueError("A valid LLM_API_KEY is required")
+        if self.llm_provider == "openai":
+            value = self.llm_openai_base_url
+            try:
+                url = urlsplit(value)
+                host = url.hostname
+                valid = (url.scheme == "https" and host and url.username is None and url.password is None
+                         and not url.query and not url.fragment and "?" not in value and "#" not in value
+                         and "\\" not in value and "%" not in url.netloc
+                         and not any(ord(char) <= 32 or ord(char) == 127 for char in value)
+                         and url.port != 0)
+            except ValueError:
+                valid = False
+            if not valid:
+                raise ValueError("OpenAI base URL must be a valid HTTPS URL without credentials, query or fragment")
         return self
 
     @field_validator("ner_model")

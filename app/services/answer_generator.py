@@ -1,5 +1,6 @@
 """Explicitly configured LLM adapters; retrieved text is untrusted input."""
 
+import asyncio
 import json
 import logging
 from urllib.parse import quote
@@ -53,12 +54,54 @@ class GeneratorRateLimitError(AnswerGenerationError):
 
 
 class HTTPAnswerGenerator:
-    """One configured provider. No fallback, redirects, retries, or content logging."""
+    """One configured provider; bounded retries, no fallback or content logging."""
 
     def __init__(self, settings, *, client=None):
         self.settings = settings
         self.client = client or httpx.AsyncClient(timeout=settings.llm_timeout_seconds,
                                                   follow_redirects=False, trust_env=False)
+
+    async def _request(self, url, headers, body):
+        """Retry only connection failures and selected transient HTTP statuses.
+
+        No retries on rate limits, read/write timeouts, malformed output or other
+        errors. An HTTP 5xx can still represent a billable upstream operation.
+        """
+        for attempt in range(self.settings.llm_max_retries + 1):
+            try:
+                async with self.client.stream("POST", url, headers=headers, json=body) as response:
+                    if response.is_error:
+                        logger.warning("Model provider returned HTTP status %d", response.status_code)
+                    if response.status_code == 429:
+                        raise GeneratorRateLimitError("Model provider rate or quota limit")
+                    response.raise_for_status()
+                    raw = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        raw.extend(chunk)
+                        if len(raw) > MAX_PROVIDER_BYTES:
+                            raise AnswerGenerationError("Model provider response exceeds limits")
+                    return raw
+            except httpx.HTTPStatusError as error:
+                retry = error.response.status_code in {500, 502, 503, 504}
+                if not retry or attempt >= self.settings.llm_max_retries:
+                    logger.warning("Model provider request failed")
+                    raise AnswerGenerationError("Model provider unavailable or returned an invalid response") from None
+            except httpx.ConnectTimeout:
+                if attempt >= self.settings.llm_max_retries:
+                    logger.warning("Model provider timed out")
+                    raise GeneratorTimeoutError("Model provider timed out") from None
+            except httpx.ConnectError:
+                if attempt >= self.settings.llm_max_retries:
+                    logger.warning("Model provider request failed")
+                    raise AnswerGenerationError("Model provider unavailable or returned an invalid response") from None
+            except httpx.TimeoutException:
+                logger.warning("Model provider timed out")
+                raise GeneratorTimeoutError("Model provider timed out") from None
+            except httpx.HTTPError:
+                logger.warning("Model provider request failed")
+                raise AnswerGenerationError("Model provider unavailable or returned an invalid response") from None
+            logger.warning("Retrying model provider after transient failure: attempt=%d", attempt + 1)
+            await asyncio.sleep(self.settings.llm_retry_backoff_seconds * (2 ** attempt))
 
     async def generate(self, question, context):
         cfg = self.settings
@@ -66,7 +109,7 @@ class HTTPAnswerGenerator:
             {"id": item.citation_id, "text": item.text} for item in context
         ]}, ensure_ascii=False, separators=(",", ":"))
         if cfg.llm_provider == "openai":
-            url = "https://api.openai.com/v1/chat/completions"
+            url = cfg.llm_openai_base_url.rstrip("/") + "/chat/completions"
             headers = {"Authorization": "Bearer " + cfg.llm_api_key.get_secret_value()}
             body = {"model": cfg.llm_model, "messages": [
                 {"role": "system", "content": SYSTEM}, {"role": "user", "content": data}],
@@ -82,17 +125,7 @@ class HTTPAnswerGenerator:
             raise AnswerGenerationError("Model provider is disabled")
         stage = "http"
         try:
-            async with self.client.stream("POST", url, headers=headers, json=body) as response:
-                if response.is_error:
-                    logger.warning("Model provider returned HTTP status %d", response.status_code)
-                if response.status_code == 429:
-                    raise GeneratorRateLimitError("Model provider rate or quota limit")
-                response.raise_for_status()
-                raw = bytearray()
-                async for chunk in response.aiter_bytes():
-                    raw.extend(chunk)
-                    if len(raw) > MAX_PROVIDER_BYTES:
-                        raise AnswerGenerationError("Model provider response exceeds limits")
+            raw = await self._request(url, headers, body)
             stage = "provider_json"
             payload = json.loads(raw)
             stage = "provider_content"
@@ -112,12 +145,6 @@ class HTTPAnswerGenerator:
             return GeneratedAnswer(parsed["answer"], tuple(
                 CitationEvidence(value["id"], value["quote"]) for value in parsed["citations"]
             ))
-        except httpx.TimeoutException:
-            logger.warning("Model provider timed out")
-            raise GeneratorTimeoutError("Model provider timed out") from None
-        except httpx.HTTPError:
-            logger.warning("Model provider request failed")
-            raise AnswerGenerationError("Model provider unavailable or returned an invalid response") from None
         except (ValueError, TypeError, KeyError, IndexError, UnicodeError):
             logger.warning("Model provider returned an invalid response: stage=%s", stage)
             raise AnswerGenerationError("Model provider unavailable or returned an invalid response") from None
