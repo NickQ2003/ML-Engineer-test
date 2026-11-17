@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 import pytest
 from pydantic import ValidationError
 
-from app.api.dependencies import get_ocr_service
+from app.api.dependencies import get_ocr_service, get_retrieval_service
 from app.core.config import Settings
 from app.core.logging import configure_logging
 from app.main import lifespan
@@ -27,6 +27,17 @@ def test_service_dependency_is_shared_for_concurrent_requests():
         with ThreadPoolExecutor(max_workers=8) as executor:
             ids = list(executor.map(lambda _: client.get("/test-service").json()["id"], range(20)))
         assert len(set(ids)) == 1
+
+
+def test_retrieval_dependency_is_shared_and_closed_on_shutdown():
+    app = FastAPI(lifespan=lifespan)
+    with TestClient(app):
+        request = type("Request", (), {"app": app})()
+        service = get_retrieval_service(request)
+        assert service is get_retrieval_service(request)
+        assert service.ledger is app.state.ingestion_service.ledger
+        assert not service._closing
+    assert service._closing
 
 
 def test_log_level_is_validated_and_applied():

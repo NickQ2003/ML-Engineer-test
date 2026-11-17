@@ -1,7 +1,7 @@
 """Provider-independent question answering over a trusted retrieval interface.
 
-This module is not wired to HTTP. The retriever must independently enforce
-ledger eligibility and return only validated fragments from completed ingestions.
+The retriever must independently enforce ledger eligibility and return only
+validated fragments from completed ingestions.
 """
 
 from dataclasses import dataclass, field

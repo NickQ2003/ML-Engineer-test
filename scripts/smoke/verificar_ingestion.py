@@ -22,7 +22,10 @@ from qdrant_client import models
 from app.core.config import Settings
 from app.core.embedding_model import MODEL_NAME, MODEL_REVISION
 from app.maintenance.cleanup_ingest import clean_attempt
-from app.services.ingestion_ledger import IngestionLedger, LedgerStateError, PageRecord
+from app.services.ask_retrieval import LedgerRetriever, ManagedRetrievalService
+from app.services.ask_service import AskService, GeneratedAnswer
+from app.services.embedding_async import EmbeddingService
+from app.services.ingestion_ledger import IngestionLedger, LedgerError, LedgerStateError, PageRecord
 from app.services.ingestion_vectors import IngestionVectorStore, VectorCompatibilityError, VectorStoreError, chunk_id, endpoint_key
 
 CLIENT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -70,6 +73,126 @@ def scanned_with_empty_first_page():
         return scanned.tobytes()
 
 
+async def verify_retrieval(settings, ledger, store, *, partial_fixture):
+    """Actual model, Qdrant and SQLite; the answer generator is explicitly fake."""
+    embeddings = EmbeddingService(settings)
+    managed = ManagedRetrievalService(settings, ledger)
+    partial = None
+    try:
+        vector = await embeddings.embed_query("What did the board discuss in the meeting?")
+        retriever = LedgerRetriever(ledger, store, max_candidates=100)
+        if partial_fixture:
+            partial = ledger.create(
+                ingestion_id=str(uuid4()), document_id=str(uuid4()), content_sha256="a" * 64,
+                processing_signature="b" * 64, collection=settings.ingest_collection, model_name=MODEL_NAME,
+                model_revision=MODEL_REVISION, chunk_tokens=128, overlap_tokens=32,
+                endpoint_key=endpoint_key(settings.qdrant_url),
+            )
+            ledger.record_pages(partial.ingestion_id, [PageRecord(0, True, 1)], physical_pages=1)
+            with ledger.lock(store.lock_name):
+                ledger.start_writing(partial.ingestion_id)
+                await store.upsert([models.PointStruct(
+                    id=chunk_id(partial.ingestion_id, 0), vector=vector, payload={
+                        "kind": "chunk", "schema_version": 1, "ledger_id": store.ledger_id,
+                        "ingestion_id": partial.ingestion_id, "document_id": partial.document_id,
+                        "chunk_id": chunk_id(partial.ingestion_id, 0), "chunk_index": 0, "page_number": 0,
+                        "index_in_page": 0, "char_start": 0,
+                        "char_end": len("Synthetic incomplete ingestion must not be returned"),
+                        "model_name": MODEL_NAME, "model_revision": MODEL_REVISION,
+                        "processing_signature": partial.processing_signature,
+                        "text": "Synthetic incomplete ingestion must not be returned", "source_file": "partial.pdf",
+                    },
+                )])
+            # This exact query vector gives the unfinished point the best score.
+        found = await managed.retrieve(vector, limit=5)
+        check(bool(found) and all("Synthetic incomplete ingestion" not in item.text for item in found),
+              "Real retrieval finds completed fragments and excludes the unfinished fixture"
+              if partial_fixture else "Real retrieval finds completed fragments after recreation")
+        check(all("página " in item.source and "documento " in item.source for item in found),
+              "Real retrieval produces document-specific page references")
+
+        class FakeGenerator:
+            async def generate(self, question, context):
+                return GeneratedAnswer("Synthetic test answer; no real LLM was called.", (context[0].citation_id,))
+
+        answer = await AskService(embeddings, managed, FakeGenerator()).ask("What did the board discuss?")
+        check(bool(answer.sources) and answer.answer.startswith("Synthetic test answer"),
+              "Question pipeline uses real embeddings and retrieval with an explicitly simulated generator")
+        if partial_fixture:
+            await verify_retrieval_concurrency(settings, ledger, store, retriever, vector, partial)
+    finally:
+        await managed.aclose()
+        if partial is not None:
+            # Only the synthetic attempt in disposable smoke resources is removed.
+            ledger.fail(partial.ingestion_id, "internal_error")
+            await clean_attempt(settings, ledger, partial.ingestion_id, execute=True)
+        await embeddings.aclose()
+
+
+async def verify_retrieval_concurrency(settings, ledger, store, retriever, vector, partial):
+    """Use real locks/storage; a gate simulates delay after a real Qdrant response."""
+    original_query = store.client.query_points
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def gated_query(**kwargs):
+        response = await original_query(**kwargs)
+        started.set()
+        await release.wait()
+        return response
+
+    store.client.query_points = gated_query
+    task = asyncio.create_task(retriever.retrieve(vector, limit=5))
+    try:
+        await asyncio.wait_for(started.wait(), 30)
+        try:
+            await retriever.retrieve(vector, limit=1)
+        except LedgerStateError:
+            check(True, "Concurrent retrieval is refused while a real collection lock is held")
+        else:
+            raise AssertionError("Concurrent retrieval unexpectedly acquired collection lock")
+        try:
+            await clean_attempt(settings, ledger, partial.ingestion_id, execute=True, store=store)
+        except LedgerStateError:
+            check(True, "Real cleanup is blocked by the active retrieval collection lock")
+        else:
+            raise AssertionError("Cleanup unexpectedly acquired collection lock")
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            check(True, "Cancellation of delayed retrieval is propagated")
+        else:
+            raise AssertionError("Cancelled retrieval unexpectedly completed")
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        store.client.query_points = original_query
+    check(bool(await retriever.retrieve(vector, limit=1)), "Real retrieval succeeds after cancellation releases the lock")
+
+    # Failure is real (unreachable address), not a Qdrant server timeout.
+    unavailable_settings = settings.model_copy(update={"qdrant_url": "http://127.0.0.1:1", "qdrant_read_retries": 0})
+    unavailable = IngestionVectorStore(unavailable_settings, store.ledger_id)
+    try:
+        try:
+            await LedgerRetriever(ledger, unavailable).retrieve(vector, limit=1)
+        except VectorStoreError:
+            check(True, "Unreachable Qdrant returns a controlled failure")
+        else:
+            raise AssertionError("Unreachable Qdrant was treated as a successful search")
+    finally:
+        await unavailable.aclose()
+    missing_ledger = IngestionLedger(Path(settings.ingestion_ledger_path).parent / "synthetic-missing.sqlite3")
+    try:
+        await LedgerRetriever(missing_ledger, store).retrieve(vector, limit=1)
+    except LedgerError:
+        check(True, "Missing ledger fails closed without creating a database")
+    else:
+        raise AssertionError("Missing ledger was treated as a successful search")
+    check(not missing_ledger.path.exists(), "Missing ledger database was not created")
+
+
 async def inspect_stage(mode):
     settings = Settings()
     ledger = IngestionLedger(settings.ingestion_ledger_path)
@@ -113,6 +236,7 @@ async def inspect_stage(mode):
             store.attempt_filter(scanned_record), models.FieldCondition(key="page_number", match=models.MatchValue(value=0)),
         ]))
         check(empty_page_points.count == 0, "No Qdrant points refer to the empty physical page")
+        await verify_retrieval(settings, ledger, store, partial_fixture=mode == "seed")
         if mode == "verify":
             check(True, "SQLite and Qdrant survived container recreation using their dedicated volumes")
             return

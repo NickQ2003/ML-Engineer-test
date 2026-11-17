@@ -7,6 +7,8 @@ from app.services.ocr_service import OCRService
 from app.services.extraction_service import ExtractionService
 from app.core.config import get_settings
 from app.services.ingestion_service import IngestionService
+from app.services.ask_retrieval import ManagedRetrievalService
+from app.services.ask_service import AskService
 
 
 def get_ocr_service(request: Request) -> OCRService:
@@ -29,3 +31,16 @@ def get_extraction_service(request: Request) -> ExtractionService:
 
 def get_ingestion_service(request: Request) -> IngestionService:
     return request.app.state.ingestion_service
+
+
+def get_retrieval_service(request: Request) -> ManagedRetrievalService:
+    return request.app.state.retrieval_service
+
+
+def get_ask_service(request: Request) -> AskService | None:
+    generator = getattr(request.app.state, "answer_generator", None)
+    if generator is None:
+        return None
+    return AskService(request.app.state.ingestion_service.embeddings,
+                      get_retrieval_service(request), generator,
+                      max_fragments=min(5, get_settings().ask_max_candidates))

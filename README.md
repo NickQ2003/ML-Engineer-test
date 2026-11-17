@@ -205,8 +205,10 @@ curl http://localhost:8000/health
 ```
 
 `GET /health` is a liveness check for the API, not a Qdrant readiness check.
-`POST /api/extract` and `POST /api/ingest` are implemented. `/api/ask` and its
-LLM integration remain pending. Recreate services with the new image only when
+`POST /api/extract` and `POST /api/ingest` are implemented. `/api/ask` has an
+initial HTTP connector, but no LLM provider is configured or implemented; valid
+questions currently return `503` by default. The connector is tested with an
+injected simulated generator, not a real LLM. Recreate services with the new image only when
 you intend to upgrade: an already running container does not pick up these changes.
 
 The OCR component returns words with page-relative character offsets and boxes

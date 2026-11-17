@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     qdrant_timeout_seconds: int = Field(default=10, gt=0, le=120)
     qdrant_read_retries: int = Field(default=2, ge=0, le=5)
     qdrant_batch_size: int = Field(default=64, gt=0, le=256)
+    ask_max_candidates: int = Field(default=100, ge=1, le=1000)
+    ask_max_request_bytes: int = Field(default=16384, gt=0, le=1048576)
+    ask_max_in_flight: int = Field(default=2, gt=0, le=100)
+    ask_upload_timeout_seconds: float = Field(default=10, gt=0, allow_inf_nan=False)
+    ask_job_timeout_seconds: float = Field(default=120, gt=0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def validate_ingestion_limits(self):

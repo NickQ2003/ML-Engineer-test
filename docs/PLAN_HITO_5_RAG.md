@@ -6,8 +6,8 @@ Implementar `POST /api/ask` sobre los documentos ingeridos: recibir una pregunta
 generar su embedding, recuperar fragmentos elegibles, consultar un LLM con ese
 contexto y devolver una respuesta fundamentada con fuentes. El contrato fijo es
 `RAGRequest(question: str)` y `RAGResponse(answer: str, sources: list[str])` en
-`app/models/schemas.py`; no modificarlo. El endpoint sigue pendiente: la base
-agregada en este hito inicial **no lo implementa ni activa**.
+`app/models/schemas.py`; no modificarlo. El conector HTTP está iniciado, pero
+no hay proveedor implementado ni habilitado: por defecto devuelve `503`.
 
 Hito 4 está implementado y probado en el alcance registrado, no implica que la
 precisión esté garantizada para cualquier documento. MT-002 fue revisada por el
@@ -119,8 +119,15 @@ reiniciar los servicios o volúmenes Compose existentes durante las pruebas.
   de colección usado por escritores cooperantes. Descarta estados incompletos y
   falla cerrado ante datos inconsistentes o si se agota el presupuesto de
   candidatos antes de llenar el resultado. No crea colecciones. Sus pruebas
-  actuales usan Qdrant y ledger simulados; falta validación integrada con
-  servicios reales aislados y conexión a HTTP. No es un mecanismo multiusuario.
+  unitarias usan Qdrant y ledger simulados. El smoke aislado de ingesta también
+  verificó embeddings, Qdrant y ledger reales y excluyó un punto sintético de
+  una ingesta incompleta. Faltan pruebas HTTP completas con dependencias reales.
+  No es un mecanismo multiusuario.
+- `ManagedRetrievalService` está integrado en el ciclo de vida y comparte el
+  ledger de ingesta; abre un cliente por consulta, lo cierra al terminar y no
+  crea bases ni colecciones. `ASK_MAX_CANDIDATES` limita candidatos (1–1000,
+  predeterminado 100). La dependencia está conectada al conector inicial de
+  `/api/ask`; el proveedor permanece desactivado.
 - Crear adaptador de lectura, interfaces y DTO internos; reutilizar validación de
   manifiesto sin efectos de escritura. Resolver explícitamente colección ausente:
   distinguida de colección incompatible y ledger inaccesible, sin crearla.
@@ -134,9 +141,9 @@ reiniciar los servicios o volúmenes Compose existentes durante las pruebas.
 - **Avance inicial:** `app/services/ask_service.py` define interfaces internas
   para embeddings, recuperación y generación, limita contexto sin truncar
   fragmentos, valida IDs de citas y se abstiene sin evidencia o citas. Las
-  pruebas usan fakes. El recuperador de producción aún no existe: su contrato
-  exige verificar elegibilidad en el ledger, no se debe conectar un recuperador
-  que no lo haga. Aún no hay endpoint ni proveedores reales.
+  pruebas usan fakes. El recuperador existente verifica elegibilidad en el ledger;
+  aún requiere el refuerzo y las pruebas descritas arriba antes de conectarlo.
+  No hay proveedores reales configurables todavía.
 - Implementar servicio con límite total de contexto, IDs de cita y abstención;
   probar con generador fake: sin evidencia no invoca LLM, fuentes pertenecen a
   fragmentos elegibles, citas inválidas son rechazadas y texto hostil no se trata
@@ -147,6 +154,12 @@ reiniciar los servicios o volúmenes Compose existentes durante las pruebas.
 
 ### 4. HTTP y ciclo de vida
 
+- **Avance inicial:** `POST /api/ask` valida el JSON sin reflejar contenido de
+  errores, limita cuerpo y concurrencia, controla tiempo y traduce fallos a
+  respuestas HTTP. La dependencia usa embeddings y recuperación compartidos;
+  sin generador configurado retorna `503` y no inicia procesamiento. Pruebas
+  HTTP usan dependencias inyectadas simuladas. Faltan proveedor real, política
+  definitiva de disponibilidad y validación de extremo a extremo con HTTP real.
 - Añadir `POST /api/ask` al router existente con `RAGRequest`/`RAGResponse`,
   límites de cuerpo y concurrencia, inyección y errores seguros. Mantener
   `/api/extract`, `/api/ingest` y sus respuestas sin cambios.
@@ -172,3 +185,49 @@ controlados; ningún dato sensible en logs; recursos cerrados; extracción e
 ingesta sin regresiones; pruebas automatizadas y smoke aislado reproducibles.
 La calidad semántica y resistencia a prompt injection requieren evaluación
 adicional y no quedan garantizadas por estas pruebas.
+
+## Plan de ejecución restante: puertas de avance
+
+1. **Integridad de recuperación (en curso).** Validar identificadores, firma,
+   posición global y local, páginas registradas y rangos de texto. Probar
+   payloads inconsistentes y fuentes inválidas. Puerta: pruebas dirigidas y smoke
+   con datos reales existentes de ingesta; no supone demostrar que el texto de
+   Qdrant sea auténtico frente a un administrador malicioso.
+2. **Estados, concurrencia y fallos.** Probar todos los estados del ledger,
+   locks, cancelación, límites, Qdrant/SQLite inaccesibles y manifiestos
+   incompatibles. Incluir pruebas aisladas con servicios reales donde corresponda;
+   indicar explícitamente lo simulado. Puerta: ningún fragmento no elegible llega
+   al generador, recursos liberados y batería completa sin regresiones.
+   Avance: pruebas unitarias con dependencias simuladas para estados, errores,
+   respuestas malformadas, cancelación, timeout y orden; una prueba usa un
+   lock real de ledger. La cancelación durante una lectura bloqueante espera a
+   que termine antes de soltar el lock. El smoke aislado comprobó bloqueo de una
+   búsqueda y de limpieza concurrentes, cancelación y búsqueda posterior con
+   ledger y Qdrant reales; la demora se inyectó después de la respuesta real.
+   También verificó Qdrant inaccesible y ledger ausente sin crear base de datos.
+   Quedan pruebas HTTP con servicios reales. No se provocó
+   un timeout real del servidor Qdrant ni se probó concurrencia distribuida.
+3. **Endpoint y ciclo de vida.** Conectar `/api/ask` con los esquemas existentes,
+   dependencias inyectables, admisión, límite del cuerpo, deadline y mapeo de
+   errores; no conectar un proveedor externo por defecto. Pruebas HTTP con
+   generador fake y verificación de cierre/cancelación. Puerta: contrato y
+   comportamiento ante ausencia de evidencia y fallos documentados.
+4. **Interfaz de proveedores y configuración.** Modelo/proveedor/base URL y
+   credenciales mediante Settings y secretos; desactivado por defecto, sin
+   fallback silencioso. Pruebas con transporte simulado, límites y errores
+   seguros. Puerta: no se envían datos de documentos por accidente ni se
+   registran credenciales. Las variables definitivas deben documentarse.
+5. **Local opcional.** Implementar adaptador para servidor local compatible y
+   pruebas con servidor simulado. Probar un modelo local real solo con autorización
+   para descargarlo o si ya está disponible; no iniciar ni modificar instalaciones
+   existentes automáticamente. Puerta: sin evidencia no se invoca el modelo y las
+   citas del adaptador se validan; documentar consumo y limitaciones observadas.
+6. **Gemini y OpenAI.** Adaptadores con selección explícita, validación de
+   respuestas, timeouts y reintentos seguros; nunca transmitir datos reales ni
+   incurrir en costes sin consentimiento. Tests HTTP simulados; pruebas reales
+   solo autorizadas con datos sintéticos y resultados identificados como tales.
+   Puerta: configuración reproducible y sin credenciales ni texto en logs.
+7. **Evaluación y cierre.** Smoke extremo a extremo aislado con generador fake;
+   documentar por separado cualquier prueba real de modelo. Evaluar respuestas y
+   fuentes con preguntas anotadas, ejecutar regresión completa y actualizar
+   README, DECISIONS y TEST_LOG. No declarar precisión general sin evaluación.

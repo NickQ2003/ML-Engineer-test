@@ -1,18 +1,24 @@
-"""Ingestion HTTP adapter. Question answering belongs to the next milestone."""
+"""Thin HTTP adapters for document ingestion and question answering."""
 
+import asyncio
+import json
 import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import ValidationError
+from starlette.responses import JSONResponse
 from starlette.datastructures import UploadFile
 
-from app.api.dependencies import get_ingestion_service
+from app.api.dependencies import get_ask_service, get_ingestion_service
 from app.api.extraction_form import InvalidMultipartError, close_extraction_form, parse_extraction_form
 from app.core.config import get_settings
-from app.models.schemas import IngestResponse
+from app.models.schemas import IngestResponse, RAGRequest, RAGResponse
+from app.services.ask_input import InvalidQuestionError, normalize_question
+from app.services.ask_service import AnswerGenerationError, AskService
 from app.services.chunking_service import ChunkingError, ChunkingLimitError
 from app.services.embedding_async import EmbeddingTimeoutError
-from app.services.embedding_service import EmbeddingModelUnavailableError, EmbeddingProcessingError
+from app.services.embedding_service import EmbeddingInputError, EmbeddingModelUnavailableError, EmbeddingProcessingError
 from app.services.ingestion_ledger import LedgerError
 from app.services.ingestion_service import IngestionBusyError, IngestionService, IngestionTimeoutError, NoDocumentTextError
 from app.services.ingestion_vectors import VectorStoreError
@@ -60,4 +66,39 @@ async def ingest(request: Request, service: Annotated[IngestionService, Depends(
         logger.error("Ingestion failed unexpectedly")
         raise HTTPException(500, "Ingestion failed") from None
 
-# TODO: implement POST /api/ask    (response_model=RAGResponse)
+@router.post(
+    "/ask", response_model=RAGResponse,
+    openapi_extra={"requestBody": {"required": True, "content": {"application/json": {"schema": {
+        "type": "object", "required": ["question"], "properties": {
+            "question": {"type": "string", "minLength": 1, "maxLength": 2000},
+        },
+    }}}}},
+    responses={408: {"description": "Upload timeout"}, 413: {"description": "Request body too large"},
+               422: {"description": "Invalid question"}, 503: {"description": "Service unavailable"},
+               504: {"description": "Processing timeout"}},
+)
+async def ask(request: Request, service: Annotated[AskService | None, Depends(get_ask_service)]):
+    # Validate manually to avoid echoing sensitive invalid inputs in FastAPI's
+    # default validation-error payload. The body middleware bounds these reads.
+    try:
+        body = await request.json()
+        question = normalize_question(RAGRequest.model_validate(body).question)
+    except (ValueError, TypeError, UnicodeError, ValidationError, json.JSONDecodeError):
+        raise HTTPException(422, "Invalid question") from None
+    if service is None:
+        raise HTTPException(503, "Question answering is not configured")
+    try:
+        async with asyncio.timeout(get_settings().ask_job_timeout_seconds):
+            result = await service.ask(question)
+        return JSONResponse(RAGResponse(answer=result.answer, sources=list(result.sources)).model_dump(),
+                            headers={"Cache-Control": "no-store"})
+    except (InvalidQuestionError, EmbeddingInputError):
+        raise HTTPException(422, "Invalid question") from None
+    except (TimeoutError, EmbeddingTimeoutError):
+        raise HTTPException(504, "Question answering timed out") from None
+    except (LedgerError, VectorStoreError, EmbeddingModelUnavailableError, EmbeddingProcessingError,
+            AnswerGenerationError):
+        raise HTTPException(503, "Question answering unavailable") from None
+    except Exception:
+        logger.error("Question answering failed unexpectedly")
+        raise HTTPException(500, "Question answering failed") from None

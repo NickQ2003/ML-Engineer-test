@@ -1376,6 +1376,22 @@ revoked or securely erased. OCR, NER and matching quality require a representati
 annotated evaluation; a higher count does not prove precision. MT-002 remains
 pending human review.
 
+## Hito 5 — Recuperación, concurrencia y fallos
+
+El smoke aislado `SMOKE_IMAGE=document-intelligence-stage-preview:local bash
+scripts/smoke/ingestion.sh` pasó con código local montado en solo lectura,
+Qdrant, SQLite y embeddings reales en recursos temporales propios. Se comprobó
+que una consulta concurrente y una limpieza no adquieren el lock durante otra
+recuperación, que la cancelación libera el lock y permite consultar después, y
+que Qdrant inaccesible y un ledger ausente producen errores controlados. El
+ledger ausente no se creó. La demora para probar cancelación se inyectó después
+de una respuesta real de Qdrant; no se produjo un timeout real del servidor.
+El generador del pipeline era simulado y no se evaluó calidad de respuestas.
+El lock es local y cooperativo: no valida concurrencia distribuida ni protege
+contra administradores externos. Las pruebas HTTP de errores quedan pendientes.
+La batería completa de unitarias e integración pasó: **504 pruebas en 60,16 s**
+en un contenedor aislado con el código local montado en solo lectura.
+
 ## Template for future runs
 
 ````markdown
