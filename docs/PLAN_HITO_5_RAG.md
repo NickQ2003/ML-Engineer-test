@@ -145,8 +145,9 @@ reiniciar los servicios o volúmenes Compose existentes durante las pruebas.
   fragmentos, exige una cita textual exacta por ID y se abstiene sin evidencia o citas. Las
   pruebas usan fakes. El recuperador existente verifica elegibilidad en el ledger;
   aún requiere el refuerzo y las pruebas descritas arriba antes de conectarlo.
-  Los adaptadores local, Gemini y OpenAI son configurables. Gemini se probó con
-  tres preguntas sintéticas reales; local y OpenAI solo con transporte simulado.
+  Los adaptadores Gemini y OpenAI son configurables. Gemini se probó con
+  preguntas sintéticas reales; OpenAI solo con transporte simulado. La generación
+  con LLM local se retiró del alcance por prioridad y tiempo.
 - Implementar servicio con límite total de contexto, IDs de cita y abstención;
   probar con generador fake: sin evidencia no invoca LLM, fuentes pertenecen a
   fragmentos elegibles, citas inválidas son rechazadas y texto hostil no se trata
@@ -221,11 +222,8 @@ adicional y no quedan garantizadas por estas pruebas.
    fallback silencioso. Pruebas con transporte simulado, límites y errores
    seguros. Puerta: no se envían datos de documentos por accidente ni se
    registran credenciales. Las variables definitivas deben documentarse.
-5. **Local opcional.** Implementar adaptador para servidor local compatible y
-   pruebas con servidor simulado. Probar un modelo local real solo con autorización
-   para descargarlo o si ya está disponible; no iniciar ni modificar instalaciones
-   existentes automáticamente. Puerta: sin evidencia no se invoca el modelo y las
-   citas del adaptador se validan; documentar consumo y limitaciones observadas.
+5. **LLM local — fuera de alcance.** El adaptador de generación local se retiró;
+   esto no afecta al modelo de embeddings local usado por recuperación e ingesta.
 6. **Gemini y OpenAI.** Adaptadores con selección explícita, validación de
    respuestas, timeouts y reintentos seguros; nunca transmitir datos reales ni
    incurrir en costes sin consentimiento. Tests HTTP simulados; pruebas reales

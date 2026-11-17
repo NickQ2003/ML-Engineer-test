@@ -148,16 +148,14 @@ def test_capacity_is_bounded_and_cancellation_releases_it(monkeypatch):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("provider", ["local", "openai", "gemini"])
+@pytest.mark.parametrize("provider", ["openai", "gemini"])
 def test_http_connector_with_mocked_provider_protocol(monkeypatch, provider):
     from app.services.answer_generator import HTTPAnswerGenerator
 
     async def run():
         def handler(request):
             text = '{"answer":"Based on the record","citations":[{"id":"S1","quote":"facts"}]}'
-            if provider == "local":
-                payload = {"message": {"content": text}}
-            elif provider == "openai":
+            if provider == "openai":
                 payload = {"choices": [{"message": {"content": text}}]}
             else:
                 payload = {"candidates": [{"content": {"parts": [{"text": text}]}}]}
@@ -183,13 +181,14 @@ def test_fabricated_quote_is_rejected_without_retry_or_leak(monkeypatch, caplog)
         calls = []
         def handler(request):
             calls.append(1)
-            return httpx.Response(200, json={"message": {"content": json.dumps({
+            return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({
                 "answer": "private invented answer",
                 "citations": [{"id": "S1", "quote": "invented secret evidence"}],
-            })}})
+            })}}]})
         import json
         provider_client = httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False)
-        generator = HTTPAnswerGenerator(Settings(llm_provider="local", llm_model="test"), client=provider_client)
+        generator = HTTPAnswerGenerator(Settings(llm_provider="openai", llm_model="test", llm_api_key="test-key",
+                                                  llm_allow_external=True), client=provider_client)
         app = app_for(monkeypatch, AskService(Embedder(), Retriever([RetrievedFragment("actual facts", "source")]), generator))
         try:
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:

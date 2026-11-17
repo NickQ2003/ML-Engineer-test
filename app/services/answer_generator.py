@@ -65,13 +65,7 @@ class HTTPAnswerGenerator:
         data = json.dumps({"question": question, "excerpts": [
             {"id": item.citation_id, "text": item.text} for item in context
         ]}, ensure_ascii=False, separators=(",", ":"))
-        if cfg.llm_provider == "local":
-            url = cfg.llm_local_base_url.rstrip("/") + "/api/chat"
-            headers = {}
-            body = {"model": cfg.llm_model, "stream": False, "format": "json",
-                    "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": data}],
-                    "options": {"num_predict": cfg.llm_max_output_tokens}}
-        elif cfg.llm_provider == "openai":
+        if cfg.llm_provider == "openai":
             url = "https://api.openai.com/v1/chat/completions"
             headers = {"Authorization": "Bearer " + cfg.llm_api_key.get_secret_value()}
             body = {"model": cfg.llm_model, "messages": [
@@ -102,9 +96,7 @@ class HTTPAnswerGenerator:
             stage = "provider_json"
             payload = json.loads(raw)
             stage = "provider_content"
-            if cfg.llm_provider == "local":
-                content = payload["message"]["content"]
-            elif cfg.llm_provider == "openai":
+            if cfg.llm_provider == "openai":
                 content = payload["choices"][0]["message"]["content"]
             else:
                 content = _gemini_content(payload)

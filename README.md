@@ -229,24 +229,14 @@ Configure a single provider in a private environment file; use `.env.example`
 for the full settings. The default `LLM_PROVIDER=disabled` sends no data:
 
 ```dotenv
-# Option 1: your already-running Ollama-compatible server; no automatic download.
-LLM_PROVIDER=local
-LLM_MODEL=your-installed-model
-LLM_LOCAL_BASE_URL=http://host.docker.internal:11434
-
-# Alternatives, not combined with the local example above:
-# LLM_PROVIDER=gemini   # or openai
-# LLM_MODEL=your-supported-model
-# LLM_API_KEY=your-private-key
-# LLM_ALLOW_EXTERNAL=true
+LLM_PROVIDER=gemini   # or openai
+LLM_MODEL=your-supported-model
+LLM_API_KEY=your-private-key
+LLM_ALLOW_EXTERNAL=true
 ```
 
-For local non-container deployment, the default URL is `http://127.0.0.1:11434`;
-inside a container, localhost refers to that container. A configured local URL
-may nevertheless point to a remote server: ensure it is trusted. The local model
-must support the Ollama `/api/chat` JSON format; model names and provider-specific
-capabilities must be checked independently. External providers receive the
-question and retrieved excerpts; `LLM_ALLOW_EXTERNAL=true` is required in
+Model names and provider-specific capabilities must be checked independently.
+Providers receive the question and retrieved excerpts; `LLM_ALLOW_EXTERNAL=true` is required in
 addition to the provider, model and key. They may charge and apply their own data
 policies; a Gemini free tier, if offered, is subject to current limits. Never
 commit credentials. Privileged host users can inspect environment variables.

@@ -17,7 +17,7 @@ def settings(provider):
                     llm_allow_external=True)
 
 
-@pytest.mark.parametrize("provider", ["local", "openai", "gemini"])
+@pytest.mark.parametrize("provider", ["openai", "gemini"])
 def test_provider_protocol_and_secret_handling(provider):
     async def run():
         seen = []
@@ -30,13 +30,10 @@ def test_provider_protocol_and_secret_handling(provider):
                 assert request.headers["authorization"] == "Bearer test-key"
                 assert request.url.host == "api.openai.com"
                 data = {"choices": [{"message": {"content": '{"answer":"ok","citations":[{"id":"S1","quote":"untrusted context"}]}'}}]}
-            elif provider == "gemini":
+            else:
                 assert request.headers["x-goog-api-key"] == "test-key"
                 assert request.url.host == "generativelanguage.googleapis.com"
                 data = {"candidates": [{"content": {"parts": [{"text": '{"answer":"ok","citations":[{"id":"S1","quote":"untrusted context"}]}'}]}}]}
-            else:
-                assert request.url.path == "/api/chat" and "authorization" not in request.headers
-                data = {"message": {"content": '{"answer":"ok","citations":[{"id":"S1","quote":"untrusted context"}]}'}}
             assert "test-key" not in str(request.url) and "test-key" not in encoded
             return httpx.Response(200, json=data)
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False)
@@ -65,18 +62,23 @@ def test_disabled_needs_no_model_or_key_and_secrets_are_hidden():
     assert "secret-key" not in str(error.value)
 
 
+def test_local_generation_is_not_a_supported_provider():
+    with pytest.raises(ValidationError):
+        Settings(llm_provider="local", llm_model="model")
+
+
 @pytest.mark.parametrize("response", [
     httpx.Response(500, text="sensitive provider response"),
-    httpx.Response(200, json={"message": {"content": "not json"}}),
-    httpx.Response(200, json={"message": {"content": '{"answer":"ok","citations":"S1"}'}}),
-    httpx.Response(200, json={"message": {"content": '{"answer":"ok","citations":["S1"]}'}}),
-    httpx.Response(200, json={"message": {"content": '{"answer":"ok","citations":[{"id":"S1"}]}'}}),
+    httpx.Response(200, json={"choices": [{"message": {"content": "not json"}}]}),
+    httpx.Response(200, json={"choices": [{"message": {"content": '{"answer":"ok","citations":"S1"}'}}]}),
+    httpx.Response(200, json={"choices": [{"message": {"content": '{"answer":"ok","citations":["S1"]}'}}]}),
+    httpx.Response(200, json={"choices": [{"message": {"content": '{"answer":"ok","citations":[{"id":"S1"}]}'}}]}),
     httpx.Response(200, content=b"x" * (MAX_PROVIDER_BYTES + 1)),
 ])
 def test_bad_provider_response_fails_without_disclosing_content(response):
     async def run():
         client = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: response), trust_env=False)
-        generator = HTTPAnswerGenerator(settings("local"), client=client)
+        generator = HTTPAnswerGenerator(settings("openai"), client=client)
         try:
             with pytest.raises(AnswerGenerationError) as error:
                 await generator.generate("question", (ContextFragment("S1", "context"),))
@@ -93,7 +95,7 @@ def test_provider_timeout_is_distinct_and_not_retried():
         raise httpx.ReadTimeout("sensitive details", request=request)
     async def run():
         client = httpx.AsyncClient(transport=httpx.MockTransport(timeout), trust_env=False)
-        generator = HTTPAnswerGenerator(settings("local"), client=client)
+        generator = HTTPAnswerGenerator(settings("openai"), client=client)
         try:
             with pytest.raises(GeneratorTimeoutError, match="^Model provider timed out$"):
                 await generator.generate("question", (ContextFragment("S1", "context"),))
@@ -109,7 +111,7 @@ def test_provider_rate_limit_is_distinct_and_not_retried():
         calls.append(1)
         return httpx.Response(429, text="private provider detail")
     async def run():
-        generator = HTTPAnswerGenerator(settings("local"), client=httpx.AsyncClient(
+        generator = HTTPAnswerGenerator(settings("openai"), client=httpx.AsyncClient(
             transport=httpx.MockTransport(limited), trust_env=False,
         ))
         try:

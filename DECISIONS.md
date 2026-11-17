@@ -192,14 +192,14 @@
 
 ## Question answering providers
 
-- Generation defaults to disabled. Local Ollama-compatible, Gemini and OpenAI
-  adapters share one interface; external providers additionally require the
+- Generation defaults to disabled. Gemini and OpenAI adapters share one
+  interface; both providers require the
   explicit `LLM_ALLOW_EXTERNAL=true` acknowledgement and an API key. No provider
-  fallback, automatic model download, or generation retries are performed.
+  fallback or generation retries are performed. The local generation adapter
+  was removed to focus the project scope; local embeddings remain in use.
 - Questions and retrieved document text are sensitive. Keys are excluded from
   supervised OCR, NER and embedding workers and must not be logged. Environment
-  secrets remain inspectable by privileged host users. The configured local URL
-  is operator-controlled and may point outside the host; it must be trusted.
+  secrets remain inspectable by privileged host users.
 - A citation requires a literal, bounded substring from its selected fragment;
   if any quote or ID is invalid, the whole answer is rejected without retry.
   Literal presence does not establish semantic support or factual truth and may
