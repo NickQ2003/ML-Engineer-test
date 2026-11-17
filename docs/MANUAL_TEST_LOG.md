@@ -25,8 +25,8 @@ Automated tests, commands, and technical results are recorded separately in
 The OCR service generated the boxes, and a script prepared with the assistant's
 help was used to draw them on a copy of the PDF. The **evaluation recorded below
 is the observation reported by the user**, not an automated approval or a result
-inferred by AI. The generation procedure and technical count are in
-[TEST_LOG.md](TEST_LOG.md#2026-11-15--preliminary-visual-review-of-ocr-boxes).
+inferred by AI. The current automated verification scope is summarized in
+[TEST_LOG.md](TEST_LOG.md).
 
 ### Manual procedure
 
