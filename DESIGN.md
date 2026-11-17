@@ -31,9 +31,10 @@ requested names → return PDF-point boxes with **zero-based** page indices.
 Unmappable spans are omitted rather than given invented boxes. Optional repeated
 name recovery uses already-located NER names and OCR words; it is off by default.
 The separate React frontend calls `/api/extract` through Nginx and renders the
-selected PDF in the browser. Optional authenticated stages are shown only after
-checking the PDF and final result; the preview retains only the latest PDF and
-overlays in backend memory, with bounds and expiry.
+selected PDF in the browser. Stages load automatically after checking the PDF and
+final result; Compose supplies an internal proxy credential without asking the
+user. The preview retains only the latest PDF and overlays in backend memory,
+with bounds and expiry. The local proxy is not user authentication.
 
 **Ingest:** `POST /api/ingest` validates and hashes a PDF → records a new
 document and attempt in SQLite → OCRs all pages, including empty ones → splits

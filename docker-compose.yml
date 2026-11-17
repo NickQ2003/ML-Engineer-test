@@ -47,8 +47,7 @@ services:
       FUZZY_THRESHOLD: ${FUZZY_THRESHOLD:-0.90}
       EXTRACT_MAX_IN_FLIGHT: ${EXTRACT_MAX_IN_FLIGHT:-2}
       EXTRACT_UPLOAD_TIMEOUT_SECONDS: ${EXTRACT_UPLOAD_TIMEOUT_SECONDS:-30}
-      EXTRACT_PREVIEW_ENABLED: ${EXTRACT_PREVIEW_ENABLED:-false}
-      EXTRACT_PREVIEW_TOKEN: ${EXTRACT_PREVIEW_TOKEN:-}
+      EXTRACT_PREVIEW_ENABLED: ${EXTRACT_PREVIEW_ENABLED:-true}
       MAX_EXTRACTED_NAMES: ${MAX_EXTRACTED_NAMES:-1000}
       MAX_FUZZY_COMPARISONS: ${MAX_FUZZY_COMPARISONS:-100000}
       MAX_FUZZY_WORK_UNITS: ${MAX_FUZZY_WORK_UNITS:-100000000}
@@ -73,10 +72,15 @@ services:
       OCR_DOCUMENT_TIMEOUT_SECONDS: ${OCR_DOCUMENT_TIMEOUT_SECONDS:-180}
       OCR_SHUTDOWN_TIMEOUT_SECONDS: ${OCR_SHUTDOWN_TIMEOUT_SECONDS:-10}
       OCR_ORIENTATION_MIN_CONFIDENCE: ${OCR_ORIENTATION_MIN_CONFIDENCE:-80}
+    command: ["sh", "-c", "export EXTRACT_PREVIEW_TOKEN=\"$$(cat /run/preview-secret/token)\"; exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]
     depends_on:
-      - qdrant
+      qdrant:
+        condition: service_started
+      preview-secret:
+        condition: service_completed_successfully
     volumes:
       - ingestion_data:/app/data/ingestion
+      - preview_secret:/run/preview-secret:ro
 
   frontend:
     build: ./frontend
@@ -84,6 +88,21 @@ services:
       - "127.0.0.1:${FRONTEND_PORT:-3000}:8080"
     depends_on:
       - app
+    volumes:
+      - preview_secret:/run/preview-secret:ro
+
+  preview-secret:
+    image: alpine:3.22
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        umask 022
+        if [ ! -s /secret/token ]; then
+          od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > /secret/token
+        fi
+        printf 'proxy_set_header Authorization "Bearer %s";\n' "$$(cat /secret/token)" > /secret/nginx.conf
+    volumes:
+      - preview_secret:/secret
 
   qdrant:
     image: qdrant/qdrant:v1.13.6
@@ -93,3 +112,4 @@ services:
 volumes:
   qdrant_data:
   ingestion_data:
+  preview_secret:

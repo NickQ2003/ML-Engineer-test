@@ -47,11 +47,9 @@ function sameResponse(first, second) {
   });
 }
 
-async function checkPreview(file, result, token, signal) {
-  const headers = {Authorization: `Bearer ${token}`};
-  const catalog = await fetch("/api/extract/preview", {headers, cache: "no-store", signal});
-  if (!catalog.ok) throw new Error(catalog.status === 401 ? "El token de vista previa no es válido." :
-    "La vista por etapas no está disponible, caducó o fue reemplazada.");
+async function checkPreview(file, result, signal) {
+  const catalog = await fetch("/api/extract/preview", {cache: "no-store", signal});
+  if (!catalog.ok) throw new Error("La vista por etapas no está disponible, caducó o fue reemplazada.");
   const info = await catalog.json();
   if (typeof info.preview_id !== "string" || !Array.isArray(info.stages) ||
       !info.stages.includes("final") || info.stages.some((stage) => !Object.hasOwn(labels, stage))) {
@@ -59,8 +57,8 @@ async function checkPreview(file, result, token, signal) {
   }
   const base = `/api/extract/preview/${encodeURIComponent(info.preview_id)}`;
   const [pdf, finalResponse] = await Promise.all([
-    fetch(`${base}/document`, {headers, cache: "no-store", signal}),
-    fetch(`${base}/stages/final`, {headers, cache: "no-store", signal}),
+    fetch(`${base}/document`, {cache: "no-store", signal}),
+    fetch(`${base}/stages/final`, {cache: "no-store", signal}),
   ]);
   if (!pdf.ok || !finalResponse.ok) throw new Error("La vista por etapas caducó o fue reemplazada.");
   const [local, remote, final] = await Promise.all([file.arrayBuffer(), pdf.arrayBuffer(), finalResponse.json()]);
@@ -69,7 +67,7 @@ async function checkPreview(file, result, token, signal) {
       final.stage !== "final" || !sameResponse(result, final)) {
     throw new Error("La vista por etapas no coincide con este PDF y resultado. Vuelve a analizarlo.");
   }
-  return {base, stages: info.stages, token};
+  return {base, stages: info.stages};
 }
 
 function PDFPage({document, pageNumber, boxes, stagePage, onError}) {
@@ -138,7 +136,7 @@ export default function App() {
   const [pdf, setPdf] = useState(null), [result, setResult] = useState(null);
   const [page, setPage] = useState(0), [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(defaultMessage), [error, setError] = useState(false);
-  const [token, setToken] = useState(""), [preview, setPreview] = useState(null);
+  const [preview, setPreview] = useState(null);
   const [stage, setStage] = useState("final"), [stageData, setStageData] = useState(null);
   const generation = useRef(0), controller = useRef(null), pdfRef = useRef(null);
 
@@ -146,7 +144,7 @@ export default function App() {
     generation.current += 1;
     controller.current?.abort(); controller.current = null;
     disposePdf(pdfRef.current); pdfRef.current = null;
-    setPdf(null); setResult(null); setPreview(null); setToken(""); setStage("final"); setStageData(null);
+    setPdf(null); setResult(null); setPreview(null); setStage("final"); setStageData(null);
     setPage(0); setBusy(false);
   }
   useEffect(() => () => {
@@ -186,6 +184,14 @@ export default function App() {
       if (!Array.isArray(data?.extracted_names) || !Array.isArray(data?.fuzzy_matches)) throw new Error("La respuesta de la API no es válida.");
       if (current !== generation.current) return;
       setPdf(loaded); setResult(data); setMessage("Análisis terminado. Revisa las cajas y las posibles omisiones.");
+      try {
+        const checked = await checkPreview(file, data, abort.signal);
+        if (current === generation.current) setPreview(checked);
+      } catch (previewError) {
+        if (current === generation.current && previewError.name !== "AbortError") {
+          setMessage("Análisis terminado. Las etapas no están disponibles; el resultado final sigue disponible.");
+        }
+      }
     } catch (err) {
       if (current === generation.current && err.name !== "AbortError") {
         disposePdf(loadingTask);
@@ -193,20 +199,6 @@ export default function App() {
         setError(true); setMessage(err.message?.startsWith("El ") || err.message?.startsWith("La ") ||
           err.message?.startsWith("No ") ? err.message : "No se pudo abrir o procesar el PDF.");
       }
-    } finally { if (current === generation.current) setBusy(false); }
-  }
-
-  async function enableStages() {
-    if (!result || !file || !token.trim() || busy) return;
-    const current = generation.current;
-    const abort = new AbortController(); controller.current = abort;
-    setBusy(true); setError(false); setMessage("Verificando la vista por etapas…");
-    try {
-      const checked = await checkPreview(file, result, token.trim(), abort.signal);
-      if (current !== generation.current) return;
-      setPreview(checked); setToken(""); setMessage("Etapas disponibles para este resultado.");
-    } catch (err) {
-      if (current === generation.current && err.name !== "AbortError") { setError(true); setMessage(err.message); }
     } finally { if (current === generation.current) setBusy(false); }
   }
 
@@ -218,7 +210,7 @@ export default function App() {
     setBusy(true); setError(false);
     try {
       const response = await fetch(`${preview.base}/stages/${encodeURIComponent(next)}`,
-        {headers: {Authorization: `Bearer ${preview.token}`}, cache: "no-store", signal: abort.signal});
+        {cache: "no-store", signal: abort.signal});
       if (!response.ok) throw new Error("La etapa caducó o fue reemplazada. El resultado final sigue disponible.");
       const data = await response.json();
       if (data.stage !== next || !Array.isArray(data.pages)) throw new Error("La etapa recibida no es válida.");
@@ -265,12 +257,6 @@ export default function App() {
               <ul className="results matches">{result.fuzzy_matches.map((item, index) =>
                 <li key={index}>{item.extracted_name} → {item.matched_name} <strong>{Math.round(item.score * 100)}%</strong></li>)}</ul>}
           </section>
-          {!preview && <details className="preview-options"><summary>Etapas opcionales</summary>
-            <p className="hint">Requiere la vista previa habilitada en el backend y su token. El resultado final funciona sin ellos.</p>
-            <label htmlFor="token">Token de vista previa</label>
-            <input id="token" type="password" value={token} autoComplete="off" onChange={(event) => setToken(event.target.value)} />
-            <button type="button" onClick={enableStages} disabled={busy || !token.trim()}>Cargar etapas</button>
-          </details>}
         </>}
         <p className="privacy">La extracción usa OCR y NER locales, no requiere Gemini. Revisa las detecciones manualmente.</p>
       </aside>

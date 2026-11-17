@@ -63,6 +63,13 @@ earlier run uncovered a PDF.js cleanup error on repeat extraction; the complete
 check passed after correcting it. The temporary project's resources were removed.
 These automated checks are not a human review or a general accuracy measurement.
 
+After automatic stage loading was added, a further isolated Compose and Chrome
+run passed with real OCR/NER on eight synthetic pages: all rotations and crop
+variants aligned, OCR/NER/final stages loaded without user credentials, repeat
+extraction worked, and basic extraction still worked with preview disabled. The
+test project and its volumes were removed. Frontend geometry tests (5) and the
+production build also passed in a disposable Node 22 container.
+
 The one-command `make quickstart` was also exercised with a synthetic key in a
 temporary, uniquely named **real Compose project**. A test-only override disabled
 host ports and added a healthcheck. The key was entered with terminal echo off,
