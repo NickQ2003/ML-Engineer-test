@@ -13,6 +13,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(extra="ignore", hide_input_in_errors=True)
 
+    # HTTP ingress: the whole multipart body and the PDF itself have separate limits.
     app_name: str = "Document Intelligence Service"
     app_env: str = "development"
     log_level: str = "INFO"
@@ -32,6 +33,8 @@ class Settings(BaseSettings):
     max_extracted_names: int = Field(default=1000, gt=0)
     max_fuzzy_comparisons: int = Field(default=100_000, gt=0)
     max_fuzzy_work_units: int = Field(default=100_000_000, gt=0)
+
+    # OCR and NER limits are process-local because each Uvicorn worker owns its services.
     ner_model: str = Field(default="en_core_web_sm", min_length=1)
     ner_name_recovery_passes: int = Field(default=0, ge=0, le=3)
     ner_max_page_chars: int = Field(default=100_000, gt=0, le=1_000_000)
@@ -53,6 +56,8 @@ class Settings(BaseSettings):
     ocr_document_timeout_seconds: float = Field(default=180.0, gt=0)
     ocr_shutdown_timeout_seconds: float = Field(default=10.0, gt=0)
     ocr_orientation_min_confidence: float = Field(default=80.0, ge=0, le=100)
+
+    # One pinned local embedding model is shared by document and query vectors.
     embedding_model_dir: str = Field(default="/opt/models/all-minilm-l6-v2", min_length=1)
     embedding_query_max_tokens: int = Field(default=256, gt=2, le=256)
     embedding_batch_size: int = Field(default=16, gt=0, le=128)
@@ -70,6 +75,8 @@ class Settings(BaseSettings):
     qdrant_timeout_seconds: int = Field(default=10, gt=0, le=120)
     qdrant_read_retries: int = Field(default=2, ge=0, le=5)
     qdrant_batch_size: int = Field(default=64, gt=0, le=256)
+
+    # Retrieval and generation have independent admission/deadlines from ingestion.
     ask_max_candidates: int = Field(default=100, ge=1, le=1000)
     ask_max_request_bytes: int = Field(default=16384, gt=0, le=1048576)
     ask_max_in_flight: int = Field(default=2, gt=0, le=100)

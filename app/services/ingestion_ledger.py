@@ -20,6 +20,8 @@ from app.core.local_storage import StorageError, file_lock, private_directory, p
 
 _IDENTITY = "document-intelligence-ingestion-ledger"
 _SCHEMA_VERSION = 2
+# State is a recovery protocol: an uncertain remote write must not look
+# completed or be retried as if no vector had reached Qdrant.
 _HEX_256 = re.compile(r"[0-9a-f]{64}\Z")
 _ERROR_CODES = frozenset({
     "invalid_pdf", "no_text", "chunking_error", "chunk_limit", "ocr_unavailable", "ocr_timeout",

@@ -29,6 +29,8 @@ class LedgerRetriever:
                 or not any(vector)):
             raise ValueError("Invalid retrieval input")
         store = self.store
+        # Vector similarity only supplies candidates. Ledger state and payload
+        # identity are checked before any fragment becomes model context.
         # The nonblocking collection lock spans both Qdrant and ledger reads.
         # Ingestion and maintenance acquire this same lock for mutations.
         with self.ledger.lock(store.lock_name):

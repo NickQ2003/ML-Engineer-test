@@ -59,6 +59,8 @@ class ExtractionService:
             return None
 
     async def extract(self, stream: AsyncReadable, names: list[NamePair]) -> ExtractionResponse:
+        # OCR runs once and produces both text offsets and word geometry; NER
+        # offsets must stay attached to those exact page strings.
         generation = self.preview_store.begin() if self.preview_store is not None else None
         document = await self.ocr.extract_stream_async(stream)
         preview_pdf = (await self._preview_pdf(stream)
@@ -91,6 +93,8 @@ class ExtractionService:
     def _assemble(
         self, document: OCRDocument, entities: list[list[PersonSpan]], names: list[NamePair], capture=None,
     ) -> ExtractionResponse:
+        # Map each page-local NER span back to OCR words before fuzzy matching.
+        # If that relationship is uncertain, omit the box rather than fabricate it.
         located = []
         skipped = 0
         recovery_pages = []

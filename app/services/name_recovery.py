@@ -165,6 +165,8 @@ def recover_names(pages: list[RecoveryPage], *, passes: int, max_name_chars: int
     recovered = []
     ambiguous_groups = 0
 
+    # Every pass compares OCR windows to the original NER seeds; recovered
+    # candidates never become new seeds, which limits error propagation.
     for stage in range(1, passes + 1):
         for page_index, page_data in enumerate(pages):
             locator = page_data.locator

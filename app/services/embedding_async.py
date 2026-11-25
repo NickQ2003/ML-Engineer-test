@@ -71,12 +71,16 @@ class EmbeddingService:
         await self._process.stdin.drain()
 
     async def prepare(self, pages: list[str]) -> PreparedDocument:
+        # Ingestion sends page text to the shared worker; it returns page-local
+        # chunks and exactly one vector for each chunk.
         if (not pages or len(pages) > self.settings.max_pdf_pages or any(not isinstance(p, str) for p in pages)
                 or sum(map(len, pages)) > self.settings.ingest_max_document_chars):
             raise ChunkingLimitError("Invalid document text or size")
         return await self._run({"pages": pages}, pages=pages)
 
     async def embed_query(self, question: str) -> list[float]:
+        # Query embeddings use the same loaded model as document chunks so the
+        # vectors inhabit the same Qdrant space.
         question = normalize_question(question)
         return await self._run({"operation": "query", "question": question})
 
@@ -101,6 +105,7 @@ class EmbeddingService:
                         await _finish_cancelled_task(start)
                         self._process = start.result()
                         raise
+                    # Send only model/worker settings, never unrelated app secrets.
                     await self._send(self.settings.model_dump(include={
                         "embedding_model_dir", "embedding_batch_size", "max_pdf_pages", "ingest_chunk_tokens",
                         "ingest_overlap_tokens", "ingest_max_page_chars", "ingest_max_document_chars", "ingest_max_chunks",

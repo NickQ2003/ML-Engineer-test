@@ -73,6 +73,8 @@ class TokenAwareChunker:
             raise ValueError("Expected page text and a non-negative page number")
         if len(text) > self.max_page_chars:
             raise ChunkingLimitError("Page exceeds the configured character limit")
+        # Chunk boundaries are chosen on source words, then checked with the
+        # model tokenizer; a page boundary is never crossed or silently truncated.
         words = list(re.finditer(r"\S+", text))
         for match in words:
             word = match.group()

@@ -1,5 +1,7 @@
 /** Convert zero-based, unrotated crop-relative PDF boxes to screen percentages. */
 export function displayBox(box, width, height, rotation) {
+  // Backend boxes are crop-relative, unrotated PDF points; transform into the
+  // visible viewport only after checking that the source geometry is plausible.
   const values = [box?.x, box?.y, box?.width, box?.height, width, height];
   if (!values.every((value) => typeof value === "number" && Number.isFinite(value)) ||
       width <= 0 || height <= 0 || box.width <= 0 || box.height <= 0 ||

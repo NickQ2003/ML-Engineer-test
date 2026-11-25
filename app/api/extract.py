@@ -43,6 +43,8 @@ async def extract(
     """Validate one PDF and JSON names field, then delegate the extraction."""
     settings = get_settings()
     try:
+        # The ASGI middleware bounds the full request first; this parser then
+        # enforces per-part limits and owns temporary multipart files.
         form = await parse_extraction_form(request, settings)
         try:
             items = form.multi_items()

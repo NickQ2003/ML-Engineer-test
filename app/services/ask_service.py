@@ -72,6 +72,8 @@ class AskService:
         self.max_fragments, self.max_context_chars, self.max_answer_chars = max_fragments, max_context_chars, max_answer_chars
 
     async def ask(self, question: str) -> Answer:
+        # Keep embedding, retrieval and generation behind separate interfaces;
+        # each stage can be tested or replaced without changing the HTTP contract.
         question = normalize_question(question)
         vector = await self.embedder.embed_query(question)
         fragments = await self.retriever.retrieve(vector, limit=self.max_fragments)
@@ -103,6 +105,8 @@ class AskService:
                        or citation.quote not in texts[citation.citation_id]
                        for citation in generated.citations)):
             raise AnswerEvidenceError("Invalid generated answer or citations")
+        # Exact quote membership prevents fabricated quotations; it does not
+        # establish that the quotation logically entails the generated claim.
         if not generated.citations:
             # An ungrounded answer is never returned as fact.
             return Answer(NO_EVIDENCE, ())

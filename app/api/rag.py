@@ -48,6 +48,8 @@ logger = logging.getLogger(__name__)
 )
 async def ingest(request: Request, service: Annotated[IngestionService, Depends(get_ingestion_service)]) -> IngestResponse:
     try:
+        # Ingestion accepts exactly one binary PDF part; text extraction/chunking
+        # belongs to the service, not to this HTTP adapter.
         form = await parse_extraction_form(request, get_settings(), max_fields=0)
         try:
             if len(form.multi_items()) != 1 or "pdf_file" not in form or not isinstance(form["pdf_file"], UploadFile):
@@ -109,6 +111,8 @@ async def ask(request: Request, service: Annotated[AskService | None, Depends(ge
     if service is None:
         raise HTTPException(503, "Question answering is not configured")
     try:
+        # The job deadline covers embedding, retrieval and provider generation;
+        # request-body reading has its own earlier middleware deadline.
         async with asyncio.timeout(get_settings().ask_job_timeout_seconds):
             result = await service.ask(question)
         return JSONResponse(RAGResponse(answer=result.answer, sources=list(result.sources)).model_dump(),

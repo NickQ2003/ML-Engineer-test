@@ -122,6 +122,8 @@ class HTTPAnswerGenerator:
 
     async def generate(self, question, context):
         cfg = self.settings
+        # Only this explicit adapter sends content off-host; Settings validates
+        # provider choice, credentials and external-data consent before use.
         data = json.dumps({"question": question, "excerpts": [
             {"id": item.citation_id, "text": item.text} for item in context
         ]}, ensure_ascii=False, separators=(",", ":"))

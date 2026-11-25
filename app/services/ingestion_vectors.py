@@ -106,6 +106,8 @@ class IngestionVectorStore:
 
     async def ensure(self, *, create: bool):
         """Caller holds collection lock. Never adopt an existing unmarked collection."""
+        # Collection settings check vector shape/distance; the reserved manifest
+        # additionally binds this collection to the ledger and model revision.
         exists = await self._call(self.client.collection_exists, read=True, collection_name=self.collection)
         if not exists:
             if not create:
@@ -146,6 +148,8 @@ class IngestionVectorStore:
             raise VectorCompatibilityError("Collection contains incompatible or untagged points")
 
     async def upsert(self, points):
+        # Do not retry mutations here: a timeout may mean the write succeeded
+        # remotely, so the ingestion state machine records uncertainty instead.
         result = await self._call(
             self.client.upsert, collection_name=self.collection, points=points, wait=True,
             ordering=models.WriteOrdering.STRONG, timeout=self.settings.qdrant_timeout_seconds,

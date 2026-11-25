@@ -23,6 +23,8 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    # These services are process-scoped: reuse their worker pools and admission
+    # limits across requests, then close dependants before their shared workers.
     configure_logging(settings.log_level)
     application.state.ocr_service = OCRService(settings)
     application.state.ner_service = NERService(settings)
@@ -79,4 +81,5 @@ app.include_router(rag_router, prefix="/api", tags=["rag"])
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     """Report application liveness independently of external services."""
+    # This is liveness only; it intentionally does not claim Qdrant or the LLM is ready.
     return HealthResponse(status="ok")

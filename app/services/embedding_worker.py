@@ -19,6 +19,7 @@ def send(message: dict) -> None:
 
 
 def prepare(model, request, config):
+    # Keep page metadata even for blank OCR pages; chunk only non-whitespace text.
     pages = request["pages"]
     if not isinstance(pages, list) or not pages or len(pages) > config["max_pdf_pages"]:
         raise ChunkingLimitError("Invalid pages")
@@ -51,6 +52,8 @@ def prepare(model, request, config):
 def process(model, line, config):
     try:
         request = json.loads(line)
+        # Both operations call the same encoder: document fragments and questions
+        # must be comparable in the same model space.
         if request.get("operation", "prepare") == "query":
             vectors = model.encode([request["question"]], max_tokens=config["embedding_query_max_tokens"],
                                    max_inputs=1, max_input_chars=2000, max_document_chars=2000)

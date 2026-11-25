@@ -48,6 +48,8 @@ function sameResponse(first, second) {
 }
 
 async function checkPreview(file, result, signal) {
+  // The backend retains only the latest preview; verify its PDF bytes and final
+  // response before showing intermediate overlays for this browser selection.
   const catalog = await fetch("/api/extract/preview", {cache: "no-store", signal});
   if (!catalog.ok) throw new Error("La vista por etapas no está disponible, caducó o fue reemplazada.");
   const info = await catalog.json();
@@ -169,6 +171,8 @@ export default function App() {
     setBusy(true); setError(false); setMessage("Analizando el documento…");
     let loadingTask;
     try {
+      // PDF.js renders the user's local copy; the same File is separately sent
+      // to the backend for OCR/NER and receives the authoritative API result.
       // A separate buffer is used because PDF.js can transfer it to its worker.
       loadingTask = pdfjs.getDocument({data: new Uint8Array(await file.arrayBuffer()),
         cMapUrl: "/pdfjs/cmaps/", cMapPacked: true, standardFontDataUrl: "/pdfjs/standard_fonts/",

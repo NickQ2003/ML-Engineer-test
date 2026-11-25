@@ -118,6 +118,7 @@ class _WorkerSlot:
 
     async def detect(self, pages: tuple[str, ...]) -> list[list[PersonSpan]]:
         if self.process is None:
+            # Load spaCy once per slot; later requests reuse this process/model.
             self.process = await _start_worker()
             await _send(self.process, {
                 "model": self.settings.ner_model,
@@ -179,6 +180,8 @@ class NERService:
 
     async def detect_pages(self, pages: list[str] | tuple[str, ...]) -> list[list[PersonSpan]]:
         """Detect each page independently without running spaCy on the event loop."""
+        # Admission counts active and queued jobs; the process limiter separately
+        # caps how many model workers execute at once.
         source = validate_pages(
             pages, max_pages=self.settings.max_pdf_pages,
             max_page_chars=self.settings.ner_max_page_chars,

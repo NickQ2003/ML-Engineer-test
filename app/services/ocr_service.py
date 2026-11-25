@@ -87,6 +87,8 @@ def _word_box(page: pymupdf.Page, pix: pymupdf.Pixmap, scale: float, row: dict[s
         left, top, right, bottom = pix.width - right, pix.height - bottom, pix.width - left, pix.height - top
     elif normalized and page.rotation == 270:
         left, top, right, bottom = top, pix.height - right, bottom, pix.height - left
+    # Undo image scale/origin and then page rotation; API boxes use unrotated
+    # crop-relative PDF points, not the raster coordinates returned by Tesseract.
     pixels = pymupdf.Rect(pix.x + left, pix.y + top, pix.x + right, pix.y + bottom)
     rect = pixels * ~pymupdf.Matrix(scale, scale) * page.derotation_matrix
     visible = page.rect * page.derotation_matrix
@@ -311,6 +313,8 @@ class OCRService:
                     timeout=self.settings.ocr_timeout_seconds,
                 )
                 normalized = False
+                # Rotation correction is a confidence-based fallback, not a
+                # guarantee that OCR selected the semantically correct orientation.
                 if page.rotation and _mean_confidence(data) < self.settings.ocr_orientation_min_confidence:
                     with closing(image.rotate(page.rotation, expand=True)) as alternate:
                         alternate_data = pytesseract.image_to_data(

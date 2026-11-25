@@ -125,6 +125,8 @@ class IngestionService:
             raise IngestionTimeoutError("Ingestion deadline exceeded") from None
 
     async def _run(self, upload):
+        # The ledger begins before expensive work so failures are inspectable;
+        # Qdrant writes happen only after OCR, chunking and embeddings validate.
         data = bytearray()
         try:
             async with asyncio.timeout(self.settings.ingest_upload_timeout_seconds):
@@ -167,6 +169,8 @@ class IngestionService:
                     raise EmbeddingProcessingError("Prepared document does not match all OCR pages")
                 await _run_blocking(lambda: self.ledger.set_chunk_counts(ingestion_id, [p.chunk_count for p in prepared.pages]))
                 with self.ledger.lock(self.vectors.lock_name):
+                    # SQLite and Qdrant cannot commit atomically. Persist write
+                    # intent, upsert, confirm and verify before marking complete.
                     await self.vectors.ensure(create=True)
                     await _run_blocking(self.ledger.start_writing, ingestion_id)
                     record = await _run_blocking(self.ledger.get, ingestion_id)

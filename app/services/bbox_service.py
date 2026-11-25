@@ -22,6 +22,8 @@ def _valid_word(page: OCRPage, word: OCRWord) -> bool:
 
 
 def _adjacent(first: OCRWord, second: OCRWord) -> bool:
+    # Geometry is deliberately conservative: same block/paragraph plus bounded
+    # gaps reduce false boxes, at the cost of omitting some wrapped names.
     if (first.block_number, first.paragraph_number) != (second.block_number, second.paragraph_number):
         return False
     height = max(first.box.height, second.box.height)
